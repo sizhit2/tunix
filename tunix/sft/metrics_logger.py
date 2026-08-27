@@ -152,6 +152,15 @@ class MetricsLoggerOptions:
   # OpenTelemetry API ("pip install google-tunix[otel]"). Exporters and
   # provider lifecycle are owned by the application, not by Tunix.
   enable_opentelemetry: bool = False
+  # Whether the training mode ("train"/"eval") is part of the exported metric
+  # name. When True (the default) a metric is exported as
+  # "<prefix>/<mode>/<name>"; when False the mode segment is dropped and the
+  # metric is exported as "<prefix>/<name>". Callers whose metric names already
+  # carry their own namespaces (e.g. the RL orchestrator's "rollout/...",
+  # "rewards/...") can set this to False to avoid a redundant "train/" level in
+  # dashboards. The mode is still recorded in the local history and as an
+  # OpenTelemetry attribute, so train and eval remain distinguishable there.
+  include_mode_in_metric_name: bool = True
 
   def create_backends(self) -> list[LoggingBackend]:
     """Factory method to create a fresh set of live backends."""
@@ -268,6 +277,11 @@ class MetricsLogger:
         keyword-only argument exists for tests and embedding applications.
     """
     self._metrics = {}
+    self._include_mode_in_metric_name = (
+        metrics_logger_options.include_mode_in_metric_name
+        if metrics_logger_options
+        else True
+    )
     self._backends = (
         metrics_logger_options.create_backends()
         if metrics_logger_options
@@ -310,7 +324,8 @@ class MetricsLogger:
     mode_metrics[metric_name].append(scalar_value)
 
     jax.monitoring.record_scalar(
-        f"{metrics_prefix}/{mode}/{metric_name}", scalar_value, step=step  # pyrefly: ignore[bad-argument-type]
+        self._event_name(metrics_prefix, metric_name, mode), scalar_value,
+        step=step,
     )
 
     if self._otel_meter is not None:
@@ -327,6 +342,16 @@ class MetricsLogger:
             mode,
             metric_name,
         )
+
+  def _event_name(
+      self, metrics_prefix: str, metric_name: str, mode: Mode | str
+  ) -> str:
+    """Returns the metric name exported to the logging backends."""
+    parts = [metrics_prefix]
+    if self._include_mode_in_metric_name:
+      parts.append(str(mode))
+    parts.append(metric_name)
+    return "/".join(parts)
 
   def _otel_gauge(self, spec: _OtelMetricSpec):
     """Returns a cached synchronous gauge for a metric specification."""
