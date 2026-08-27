@@ -181,6 +181,76 @@ def prepare_process(argv: list[str]) -> PreparedProcess:
   )
 
 
+# --- TEMPORARY BUILD-PROVENANCE INSTRUMENTATION (not part of PR #1983) ---
+# Answers, from inside the running process: which image am I in, and which
+# copy of the tunix source did this interpreter actually import?
+def _log_build_provenance() -> None:
+  """Logs which image build and which source tree this process is executing."""
+  import hashlib  # pylint: disable=g-import-not-at-top
+  import socket  # pylint: disable=g-import-not-at-top
+
+  def _read(path: str) -> str:
+    try:
+      with open(path) as f:
+        return f.read().strip()
+    except OSError:
+      return ""
+
+  try:
+    import tunix  # pylint: disable=g-import-not-at-top
+
+    tunix_init = getattr(tunix, "__file__", "?") or "?"
+    tunix_root = os.path.dirname(os.path.dirname(os.path.abspath(tunix_init)))
+  except Exception as e:  # pylint: disable=broad-except
+    tunix_init, tunix_root = f"IMPORT-FAILED: {e!r}", "?"
+
+  # Fingerprint the orchestrator source this process actually resolves, via the
+  # same import machinery the run uses. Compare with `sha256sum` on the host.
+  import importlib.util  # pylint: disable=g-import-not-at-top
+
+  try:
+    spec = importlib.util.find_spec("tunix.experimental.orchestrator.rl_program")
+    rl_path = spec.origin if spec else None
+  except Exception:  # pylint: disable=broad-except
+    rl_path = None
+  if rl_path:
+    try:
+      with open(rl_path, "rb") as f:
+        rl_sha = hashlib.sha256(f.read()).hexdigest()[:16]
+    except OSError:
+      rl_sha = "(unreadable)"
+  else:
+    rl_path, rl_sha = "(unresolved)", "(unresolved)"
+
+  # Baked stamp is authoritative (written at image build time); the env
+  # fallback is supplied by the launcher and only as trustworthy as it is.
+  stamp = _read("/etc/tunix-build-stamp")
+  if stamp:
+    stamp = f"{stamp} [baked into image]"
+  elif os.environ.get("TUNIX_BUILD_STAMP"):
+    stamp = f'{os.environ["TUNIX_BUILD_STAMP"]} [from env, not baked]'
+  else:
+    stamp = "(unstamped image, no TUNIX_BUILD_STAMP env)"
+  if tunix_root == "/app":
+    verdict = "IMAGE-BAKED (/app from the image build)"
+  elif os.path.isdir("/app/tunix"):
+    verdict = f"BIND-MOUNT {tunix_root} SHADOWS the image's /app copy"
+  else:
+    verdict = f"{tunix_root} (no /app in image)"
+
+  logging.info("=== TUNIX BUILD PROVENANCE ===")
+  logging.info("provenance: host=%s pid=%d", socket.gethostname(), os.getpid())
+  logging.info("provenance: image stamp   = %s", stamp)
+  logging.info("provenance: python        = %s", sys.executable)
+  logging.info("provenance: PYTHONPATH    = %s", os.environ.get("PYTHONPATH", "(unset)"))
+  logging.info("provenance: tunix.__file__= %s", tunix_init)
+  logging.info("provenance: rl_program.py = %s", rl_path)
+  logging.info("provenance: rl_program.py sha256[:16] = %s", rl_sha)
+  logging.info("provenance: EXECUTING     = %s", verdict)
+  logging.info("=== END BUILD PROVENANCE ===")
+# --- END TEMPORARY INSTRUMENTATION ---
+
+
 def main(argv: list[str]) -> None:
   """Main entry point for distributed process runtime execution.
 
@@ -213,6 +283,8 @@ def main(argv: list[str]) -> None:
       format="%(asctime)s [%(filename)s:%(lineno)d] %(levelname)s %(message)s",
       force=True,
   )
+
+  _log_build_provenance()
 
   prepared_processes = [
       prepare_process(slice_argv)

@@ -50,3 +50,9 @@ RUN if [ "$INSTALL_DEEPSWE_DEPS" = "true" ]; then \
 
 # Set the default command to bash
 CMD ["bash"]
+
+# --- TEMPORARY: build stamp for provenance verification (not part of PR #1983) ---
+# Lets a running process prove which image build it is executing from the inside.
+# Pass with: docker build --build-arg TUNIX_BUILD_STAMP="$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
+ARG TUNIX_BUILD_STAMP=unset
+RUN echo "${TUNIX_BUILD_STAMP}" > /etc/tunix-build-stamp
