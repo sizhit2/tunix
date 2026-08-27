@@ -551,7 +551,7 @@ def main(argv: list[str], context: Any = None) -> None:
       ),
       metrics_logging_options=metrics_logging_options,
       max_staleness=args.max_staleness,
-      sync_weights=True,
+      sync_weights=False,
       on_step_begin=lambda step: logging.info(
           "Async GRPO step %d starting.", step
       ),
