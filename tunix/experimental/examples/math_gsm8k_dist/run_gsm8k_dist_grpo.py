@@ -237,10 +237,13 @@ def _log_rollout_samples(step: int) -> None:
     logging.info("[rollout samples] step %d produced no scored samples.", step)
     return
 
-  for sample in samples[:2]:
+  # Log the whole step, not a prefix. Capping at 2 previously hid that every
+  # member of a group was decoding identically, because the two printed rows
+  # were the same prompt's pair 0 and pair 1.
+  for sample in samples:
     logging.info(
         "[rollout sample] step=%d prompt=%s pair=%d gold=%s extracted=%s"
-        " reward=%.3f tokens=%d text=%r",
+        " reward=%.3f completion_tokens=%d completion=%r",
         step,
         sample["prompt_id"],
         sample["pair_index"],

@@ -119,9 +119,11 @@ def trace_request(req: Any) -> None:
   if not enabled():
     return
   logging.info(
-      "[rollout-trace] REQUEST request_id=%s prompt_id=%s group_offset=%s"
-      " target_pv=%s max_turns=%s gen_kwargs=%s metadata=%s prompt=%s",
+      "[rollout-trace] REQUEST request_id=%s traj_id=%s prompt_id=%s"
+      " group_offset=%s target_pv=%s max_turns=%s gen_kwargs=%s metadata=%s"
+      " prompt=%s",
       getattr(req, "request_id", None),
+      getattr(req, "traj_id", None),
       getattr(req, "prompt_id", None),
       getattr(req, "group_offset_id", None),
       getattr(req, "target_policy_version", None),
@@ -145,7 +147,7 @@ def trace_response(resp: Any) -> None:
   logging.info(
       "[rollout-trace] RESPONSE request_id=%s prompt_id=%s status=%s pv=%s"
       " env_reward=%s error=%s prompt_tokens=(%s) segments=%s metadata=%s"
-      " text=%s",
+      " completion=%s",
       getattr(resp, "request_id", None),
       getattr(resp, "prompt_id", None),
       getattr(resp, "status", None),
@@ -167,7 +169,8 @@ def trace_trajectory_item(item: Any) -> None:
   metadata = getattr(item, "metadata", None) or {}
   logging.info(
       "[rollout-trace] DTO group_id=%s pair_index=%s status=%s pv=%s"
-      " reward=%s prompt_tokens=(%s) completion_tokens=(%s) steps=%d text=%s",
+      " reward=%s prompt_tokens=(%s) completion_tokens=(%s) steps=%d"
+      " completion=%s",
       getattr(item, "group_id", None),
       getattr(item, "pair_index", None),
       getattr(traj, "status", None),

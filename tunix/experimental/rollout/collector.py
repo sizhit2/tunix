@@ -78,6 +78,12 @@ class TrajectoryCollectorEngine:
       if max_generation_steps is not None:
         generation_kwargs["max_tokens"] = max_generation_steps
 
+      # NB: do not synthesise a per-request seed here. The vLLM JAX/TPU
+      # backend rejects one outright ("JAX does not support per-request
+      # seed."), which fails every rollout. Sampling diversity within a GRPO
+      # group is the sampler's responsibility; vLLM already varies its
+      # completions, while vanilla_sampler_adapter collapses a batch to
+      # seeds[0] and needs fixing there, not here.
       sampling_params = sampler_lib.SamplingParams(
           max_tokens=generation_kwargs.get("max_tokens", 64),
           temperature=generation_kwargs.get("temperature", 0.0),
@@ -123,6 +129,12 @@ class TrajectoryCollectorEngine:
         model_call=model_call,  # pyrefly: ignore[bad-argument-type]
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
+        # Without this the engine passes max_generation_steps=None, model_call
+        # finds no "max_tokens" key and falls back to 64 -- so a caller asking
+        # for 128 silently got 64 and completions were truncated mid-answer.
+        max_response_length=self.request.generation_kwargs.get(
+            "max_generation_steps"
+        ),
     )
     rl_traj = await inner_engine.collect(mode="Trajectory")
     self.is_done = True

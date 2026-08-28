@@ -15,6 +15,7 @@
 """Vanilla Sampler adapter using Tunix JAX Sampler."""
 
 import abc
+import hashlib
 import numbers
 from typing import Any, List, Sequence
 from absl import logging
@@ -249,6 +250,19 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     top_p = top_ps[0] if top_ps else None
     top_k = top_ks[0] if top_ks else None
     seed = seeds[0] if seeds else None
+    if seed is None:
+      # The native sampler is deterministic for a fixed seed, and a GRPO group
+      # is sampled by separate sample() calls sharing one prompt -- so leaving
+      # the seed unset makes every member of the group decode identically,
+      # which yields zero advantage and no gradient. Derive it from the
+      # request id (the trajectory id, unique per group member) so members
+      # differ while runs stay reproducible. This is deliberately local to the
+      # vanilla path: the vLLM JAX backend rejects a per-request seed.
+      req_ids = "|".join(
+          str(getattr(r, "request_id", "") or "") for r in requests
+      )
+      if req_ids.strip("|"):
+        seed = int(hashlib.sha256(req_ids.encode()).hexdigest()[:8], 16)
     return_logprobs = any(return_logprobs_list) or kwargs.get(
         "return_logprobs", False
     )

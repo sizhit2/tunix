@@ -183,6 +183,12 @@ def _create_vllm_worker(args, tokenizer):
       tensor_parallel_size=jax.device_count(),
       data_parallel_size=1,
       return_logprobs=True,
+      # The rollout loads the base model from safetensors itself, the same way
+      # _create_vanilla_worker does via create_model_from_safe_tensors. Weight
+      # sync propagates trainer *updates*; it is not how the base weights
+      # arrive. Leaving the default True makes vLLM use load_format="dummy",
+      # so every completion is sampled from a randomly initialised model.
+      init_with_random_weights=False,
       lora_config=lora_config,
       mapping_config=mapping_config,
       engine_kwargs={
