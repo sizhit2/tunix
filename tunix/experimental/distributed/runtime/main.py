@@ -53,6 +53,8 @@ import os
 import sys
 from typing import Any, Callable
 
+from absl import logging as absl_logging
+
 
 @dataclasses.dataclass(frozen=True)
 class PreparedProcess:
@@ -278,10 +280,23 @@ def main(argv: list[str]) -> None:
 
   process_executor = import_symbol(main_args.process_executor)()
 
+  # force=True here previously pinned every worker process at INFO, which
+  # silently discarded the logging.debug() calls already present in the rollout
+  # path (e.g. TrajectoryCollectEngine's "model_call starting/done"). Make the
+  # level selectable so those can be turned on without editing code.
+  log_level_name = os.environ.get("TUNIX_LOG_LEVEL", "INFO").upper()
+  log_level = getattr(logging, log_level_name, None)
+  if not isinstance(log_level, int):
+    log_level = logging.INFO
   logging.basicConfig(
-      level=logging.INFO,
+      level=log_level,
       format="%(asctime)s [%(filename)s:%(lineno)d] %(levelname)s %(message)s",
       force=True,
+  )
+  # absl gates its own debug() calls on verbosity independently of the root
+  # logger's level, so both must be raised for absl logging.debug to emit.
+  absl_logging.set_verbosity(
+      absl_logging.DEBUG if log_level <= logging.DEBUG else absl_logging.INFO
   )
 
   _log_build_provenance()

@@ -79,6 +79,11 @@ LORA_ALPHA=${LORA_ALPHA:-64.0}
 # Traces dataset item -> rollout request -> rollout response -> DTO into
 # the orchestrator log. Off by default: one line per hop per rollout.
 TRACE_ROLLOUTS=${TRACE_ROLLOUTS:-0}
+# Root log level for every worker process. DEBUG surfaces the rollout path's
+# existing logging.debug calls, e.g. TrajectoryCollectEngine's
+# "model_call starting/done", which show the sampler actually being invoked.
+LOG_LEVEL=${LOG_LEVEL:-INFO}
+export TUNIX_LOG_LEVEL="$LOG_LEVEL"
 USE_LORA=${USE_LORA:-0}
 SYNC_WEIGHTS=${SYNC_WEIGHTS:-0}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-raiden}
@@ -425,6 +430,7 @@ echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train response: $TRAIN_MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  trace rollouts: $TRACE_ROLLOUTS"
+echo "  log level:      $LOG_LEVEL"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
 echo "  sync weights:   $SYNC_WEIGHTS"
