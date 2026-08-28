@@ -26,6 +26,7 @@ import inspect
 from typing import Any
 import uuid
 
+from absl import logging
 import numpy as np
 from tunix.experimental.common import datatypes
 from tunix.experimental.common import rollout_trace
@@ -43,11 +44,46 @@ def _response_to_trajectory_item(resp: Any) -> datatypes.TrajectoryItem:
   if isinstance(resp, datatypes.RolloutResponse):
     metadata = dict(resp.metadata) if resp.metadata else {}
     success_statuses = {"COMPLETED", "SUCCEEDED"}
+    succeeded = resp.status in success_statuses
+
+    if not succeeded:
+      # RolloutResponse's contract is that a failure arrives as a result with
+      # `error` set, never as a dropped response -- but the error was being
+      # discarded here, so a failed rollout became an ordinary reward-0.0
+      # trajectory. That is indistinguishable from a rollout that genuinely
+      # scored 0, and it drags reward_mean down with no indication why. The
+      # detail previously existed only in the rollout trace, which is off by
+      # default. Log it unconditionally and keep it on the item's metadata.
+      err = resp.error
+      if err is not None:
+        metadata["rollout_error"] = f"{err.error_type}: {err.message}"
+        logging.error(
+            "Rollout failed: request_id=%s prompt_id=%s group_index=%s"
+            " status=%s %s: %s%s",
+            resp.request_id,
+            resp.prompt_id,
+            resp.group_index,
+            resp.status,
+            err.error_type,
+            err.message,
+            f"\n{err.traceback}" if err.traceback else "",
+        )
+      else:
+        metadata["rollout_error"] = f"status={resp.status} (no error detail)"
+        logging.error(
+            "Rollout failed: request_id=%s prompt_id=%s group_index=%s"
+            " status=%s, and the response carried no error detail.",
+            resp.request_id,
+            resp.prompt_id,
+            resp.group_index,
+            resp.status,
+        )
+
     traj = datatypes.Trajectory(
         reward=resp.env_reward,
         status=(
             datatypes.TrajectoryStatus.SUCCEEDED
-            if resp.status in success_statuses
+            if succeeded
             else datatypes.TrajectoryStatus.FAILED
         ),
     )
