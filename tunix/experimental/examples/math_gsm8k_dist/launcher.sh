@@ -94,6 +94,9 @@ export TUNIX_LOG_LEVEL="$LOG_LEVEL"
 USE_LORA=${USE_LORA:-0}
 SYNC_WEIGHTS=${SYNC_WEIGHTS:-0}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-raiden}
+# Orchestrator-side backend used when SYNC_WEIGHTS is on. Must be one of the
+# demo's argparse choices: raiden, no-op, none (note the hyphen in "no-op").
+WEIGHT_SYNC_BACKEND=${WEIGHT_SYNC_BACKEND:-raiden}
 SAMPLER=${SAMPLER:-inprocess_vllm}
 VLLM_INIT_WITH_RANDOM_WEIGHTS=${VLLM_INIT_WITH_RANDOM_WEIGHTS:-false}
 ROLLOUT_VLLM_HBM_UTILIZATION=${ROLLOUT_VLLM_HBM_UTILIZATION:-0.6}
@@ -458,6 +461,8 @@ echo "  host bounds:    $TPU_HOST_BOUNDS"
 echo "  wait timeout:   ${WAIT_TIMEOUT_SECS}s"
 echo "  wait poll:      ${WAIT_POLL_SECS}s"
 echo "  log tail lines: $WAIT_LOG_TAIL_LINES"
+echo "  wandb project:  ${WANDB_PROJECT:-<none>}"
+echo "  wandb run name: ${WANDB_RUN_NAME:-<auto>}"
 echo "  trainer log:    $TRAINER_LOG"
 echo "  rollout log:    $ROLLOUT_LOG"
 echo "  orch log:       $ORCHESTRATOR_LOG"
@@ -762,8 +767,13 @@ echo "Launching CPU orchestrator..."
   if [[ -n "$INFERENCE_ADDR" ]]; then
     ORCHESTRATOR_CMD+=(--inference_addr="$INFERENCE_ADDR")
   fi
+  # main replaced the --sync_weights store_true flag with --weight_sync_backend
+  # (choices: raiden, no-op, none; "none" disables sync). Passing the old flag
+  # now fails argparse, so map SYNC_WEIGHTS onto the new one.
   if [[ "$SYNC_WEIGHTS" == "1" || "$SYNC_WEIGHTS" == "true" || "$SYNC_WEIGHTS" == "True" ]]; then
-    ORCHESTRATOR_CMD+=(--sync_weights)
+    ORCHESTRATOR_CMD+=(--weight_sync_backend="$WEIGHT_SYNC_BACKEND")
+  else
+    ORCHESTRATOR_CMD+=(--weight_sync_backend=none)
   fi
 
   export JAX_PLATFORMS=cpu

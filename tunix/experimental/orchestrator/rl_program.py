@@ -677,12 +677,11 @@ class StandardRLProgram(RLProgram):
         self.policy_version = (
             new_version if new_version is not None else self.policy_version + 1
         )
-      else:
-        # No weight sync means the rollout workers' policy is unchanged, and
-        # they keep stamping trajectories with their own (unadvanced)
-        # policy_version. Advancing here would make every subsequent rollout
-        # fail raw_q's staleness filter and be dropped, starving train_stage.
-        pass
+      # NB: deliberately no else branch. Without weight sync the rollout
+      # workers' policy is unchanged and they keep stamping trajectories with
+      # their own (unadvanced) policy_version; advancing here would make every
+      # subsequent rollout fail raw_q's staleness filter and be dropped,
+      # starving train_stage and hanging the run at step 1.
 
       self.scored_q.commit(current_step, groups=uncommitted_groups)
 
