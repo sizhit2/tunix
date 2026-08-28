@@ -90,6 +90,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument(
       "--rollout_vllm_hbm_utilization", type=float, default=0.6
   )
+  parser.add_argument(
+      "--vllm_init_with_random_weights",
+      # The launcher passes this as the string "true"/"false", so it cannot be
+      # a store_true flag.
+      type=lambda v: str(v).strip().lower() in ("1", "true", "yes"),
+      default=False,
+      help=(
+          "Start vLLM from randomly initialised weights (load_format="
+          '"dummy") instead of the real safetensors in --model_dir.'
+      ),
+  )
   parser.add_argument("--rollout_vllm_max_num_seqs", type=int, default=0)
   parser.add_argument(
       "--rollout_vllm_max_num_batched_tokens", type=int, default=0
@@ -266,6 +277,13 @@ def _create_vllm_worker(args, tokenizer):
       data_parallel_size=args.mesh_fsdp,
       return_logprobs=True,
       hbm_utilization=args.rollout_vllm_hbm_utilization,
+      # The rollout loads the base model from safetensors itself, the same way
+      # _create_vanilla_worker does via create_model_from_safe_tensors. Weight
+      # sync propagates trainer *updates*; it is not how the base weights
+      # arrive. VllmConfig defaults this to True, which makes vLLM use
+      # load_format="dummy" and sample every completion from a randomly
+      # initialised model.
+      init_with_random_weights=args.vllm_init_with_random_weights,
       lora_config=lora_config,
       mapping_config=mapping_config,
       engine_kwargs=engine_kwargs,
