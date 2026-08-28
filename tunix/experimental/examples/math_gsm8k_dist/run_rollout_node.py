@@ -126,6 +126,27 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       choices=list(weight_sync.WeightSyncMode),
       help="Weight sync mode (e.g. raiden, fallback).",
   )
+  # launcher.sh appends these to every node command via its MODEL_ARGS array.
+  # The exported models.create_model only has a safetensors path, so
+  # --model_source is accepted and validated rather than silently ignored, and
+  # --maxtext_dtype is accepted only to keep the shared MODEL_ARGS array valid.
+  parser.add_argument(
+      "--model_source",
+      type=str,
+      default=os.getenv("MODEL_SOURCE", "safetensors"),
+      choices=["safetensors"],
+      help=(
+          "Where the base weights come from. models.create_model only builds "
+          "from safetensors; the maxtext path referenced by launcher.sh is not "
+          "part of this export."
+      ),
+  )
+  parser.add_argument(
+      "--maxtext_dtype",
+      type=str,
+      default=os.getenv("MAXTEXT_DTYPE", "bfloat16"),
+      help="Unused for --model_source=safetensors; accepted for MODEL_ARGS.",
+  )
   return parser.parse_args(argv)
 
 
