@@ -27,6 +27,7 @@ export BATCH_SIZE=${BATCH_SIZE:-2}
 export NUM_GENERATIONS=${NUM_GENERATIONS:-2}
 export MAX_STEPS=${MAX_STEPS:-1}
 export TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
+export REWARD_MODE=${REWARD_MODE:-exact}
 export MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$((BATCH_SIZE * NUM_GENERATIONS))}
 export EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-1000000}
 export LORA_RANK=${LORA_RANK:-16}
@@ -73,6 +74,7 @@ start_orchestrator() {
         --max_prompt_length=${MAX_PROMPT_LENGTH} \
         --max_response_length=${MAX_RESPONSE_LENGTH} \
         --train_micro_batch_size=${TRAIN_MICRO_BATCH_SIZE} \
+        --reward_mode=${REWARD_MODE} \
         --wandb_project=\"${WANDB_PROJECT}\" \
         --wandb_run_name=\"${WANDB_RUN_NAME}\" \
         --stop_workers_on_exit \
@@ -107,6 +109,7 @@ start_trainer() {
         --max_response_length=${MAX_RESPONSE_LENGTH} \
         --mini_batch_size=${MINI_BATCH_SIZE} \
         --train_micro_batch_size=${TRAIN_MICRO_BATCH_SIZE} \
+        --reward_mode=${REWARD_MODE} \
         --eval_every_n_steps=${EVAL_EVERY_N_STEPS} \
         --lora_rank=${LORA_RANK} \
         --lora_alpha=${LORA_ALPHA} \

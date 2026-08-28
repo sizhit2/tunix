@@ -38,6 +38,7 @@ BATCH_SIZE=${BATCH_SIZE:-2}
 NUM_GENERATIONS=${NUM_GENERATIONS:-2}
 MAX_STEPS=${MAX_STEPS:-1}
 TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
+REWARD_MODE=${REWARD_MODE:-exact}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$((BATCH_SIZE * NUM_GENERATIONS))}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-1000000}
 LORA_RANK=${LORA_RANK:-16}
@@ -308,6 +309,7 @@ echo "  eval interval:  $EVAL_EVERY_N_STEPS"
 echo "  prompt length:  $MAX_PROMPT_LENGTH"
 echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
+echo "  reward mode:    $REWARD_MODE"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
 echo "  sampler:        $SAMPLER"
@@ -592,6 +594,7 @@ echo "Launching CPU orchestrator..."
     --max_prompt_length="$MAX_PROMPT_LENGTH"
     --max_response_length="$MAX_RESPONSE_LENGTH"
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
+    --reward_mode="$REWARD_MODE"
     --stop_workers_on_exit
   )
   if [[ -n "$INFERENCE_ADDR" ]]; then

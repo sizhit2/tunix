@@ -136,8 +136,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument(
       "--reward_mode",
       choices=("synthetic", "exact"),
-      default="synthetic",
-      help="synthetic proves the distributed chain without relying on quality.",
+      default="exact",
+      help=(
+          "exact scores the generated answer against the gold answer;"
+          " synthetic ignores the completion and scores the group index, which"
+          " proves the distributed chain without relying on quality."
+      ),
   )
   parser.add_argument(
       "--log_dir",
@@ -178,20 +182,100 @@ def _extract_answer(text: str) -> str | None:
   return numeric[-1].replace(",", "") if numeric else None
 
 
+# Rollout samples scored during the current step, drained by
+# `_log_rollout_samples` at the step boundary. The critique stage and the
+# on_step_end callback both run on the orchestrator's event loop, so a plain
+# list needs no locking.
+_ROLLOUT_SAMPLES: list[dict[str, Any]] = []
+
+# Completion text is truncated before it reaches W&B; full text stays in the
+# orchestrator log.
+_SAMPLE_TEXT_CHARS = 600
+
+
 def _make_reward_fn(mode: str, num_generations: int):
   """Creates the per-trajectory reward function used by StandardRLProgram."""
 
   def reward_fn(item: datatypes.TrajectoryItem) -> float:
     metadata = dict(item.metadata or {})
-    if mode == "synthetic":
-      pair_index = int(metadata.get("pair_index", item.pair_index))
-      return pair_index / max(num_generations - 1, 1)
-
     text = str(metadata.get("text", ""))
     gold_answer = metadata.get("gold_answer")
-    return 1.0 if gold_answer and _extract_answer(text) == gold_answer else 0.0
+    extracted = _extract_answer(text)
+    pair_index = int(metadata.get("pair_index", item.pair_index))
+
+    if mode == "synthetic":
+      reward = pair_index / max(num_generations - 1, 1)
+    else:
+      reward = 1.0 if gold_answer and extracted == gold_answer else 0.0
+
+    # Recorded for every mode: under "synthetic" the reward ignores the
+    # completion entirely, so these columns are the only evidence in W&B that
+    # the rollout workers actually generated anything.
+    _ROLLOUT_SAMPLES.append({
+        "prompt_id": str(metadata.get("prompt_id", "")),
+        "pair_index": pair_index,
+        "gold_answer": str(gold_answer) if gold_answer is not None else "",
+        "extracted": extracted if extracted is not None else "",
+        "reward": float(reward),
+        "num_completion_tokens": (
+            len(item.completion_tokens)
+            if item.completion_tokens is not None
+            else 0
+        ),
+        "text_chars": len(text),
+        "text": text[:_SAMPLE_TEXT_CHARS],
+    })
+    return reward
 
   return reward_fn
+
+
+def _log_rollout_samples(step: int) -> None:
+  """Drains the step's scored samples to the orchestrator log and W&B."""
+  samples, _ROLLOUT_SAMPLES[:] = list(_ROLLOUT_SAMPLES), []
+  if not samples:
+    logging.info("[rollout samples] step %d produced no scored samples.", step)
+    return
+
+  for sample in samples[:2]:
+    logging.info(
+        "[rollout sample] step=%d prompt=%s pair=%d gold=%s extracted=%s"
+        " reward=%.3f tokens=%d text=%r",
+        step,
+        sample["prompt_id"],
+        sample["pair_index"],
+        sample["gold_answer"],
+        sample["extracted"],
+        sample["reward"],
+        sample["num_completion_tokens"],
+        sample["text"],
+    )
+
+  try:
+    import wandb  # pylint: disable=g-import-not-at-top
+  except ImportError:
+    return
+  if wandb.run is None:
+    return
+
+  columns = [
+      "step",
+      "prompt_id",
+      "pair_index",
+      "gold_answer",
+      "extracted",
+      "reward",
+      "num_completion_tokens",
+      "text_chars",
+      "text",
+  ]
+  table = wandb.Table(
+      columns=columns,
+      data=[[step] + [s[c] for c in columns[1:]] for s in samples],
+  )
+  # Same step key the metrics logger uses, so the table lands on the step's
+  # existing history row instead of opening a new one.
+  wandb.run.log({"rollout/samples": table}, step=step)
 
 
 def _grpo_model_input(
@@ -538,6 +622,14 @@ def main(argv: list[str], context: Any = None) -> None:
       },
   )
 
+  def _on_step_end(step: int, result: Any) -> None:
+    logging.info(
+        "Async GRPO advanced to policy_version=%d train_result=%s.",
+        step,
+        result,
+    )
+    _log_rollout_samples(step)
+
   program = rl_program.StandardRLProgram(
       algo=algo,
       dataset=_iter_prompt_items(args),
@@ -555,11 +647,7 @@ def main(argv: list[str], context: Any = None) -> None:
       on_step_begin=lambda step: logging.info(
           "Async GRPO step %d starting.", step
       ),
-      on_step_end=lambda step, result: logging.info(
-          "Async GRPO advanced to policy_version=%d train_result=%s.",
-          step,
-          result,
-      ),
+      on_step_end=_on_step_end,
   )
 
   try:
