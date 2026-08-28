@@ -79,6 +79,13 @@ LORA_ALPHA=${LORA_ALPHA:-64.0}
 # Traces dataset item -> rollout request -> rollout response -> DTO into
 # the orchestrator log. Off by default: one line per hop per rollout.
 TRACE_ROLLOUTS=${TRACE_ROLLOUTS:-0}
+# Metric logging. LOG_DIR receives TensorBoard/CLU events; the WANDB_* values
+# are read by run_gsm8k_dist_grpo's argparse defaults via os.getenv, so they
+# must be non-empty or the W&B project name comes through blank.
+LOG_DIR=${LOG_DIR:-"${ARTIFACT_ROOT}/logs"}
+WANDB_PROJECT=${WANDB_PROJECT:-trellis-gsm8k}
+WANDB_RUN_NAME=${WANDB_RUN_NAME:-}
+WANDB_API_KEY=${WANDB_API_KEY:-}
 # Root log level for every worker process. DEBUG surfaces the rollout path's
 # existing logging.debug calls, e.g. TrajectoryCollectEngine's
 # "model_call starting/done", which show the sampler actually being invoked.
@@ -430,6 +437,8 @@ echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train response: $TRAIN_MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  trace rollouts: $TRACE_ROLLOUTS"
+echo "  wandb project:  $WANDB_PROJECT"
+echo "  log dir:        $LOG_DIR"
 echo "  log level:      $LOG_LEVEL"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
@@ -760,6 +769,7 @@ echo "Launching CPU orchestrator..."
   export JAX_PLATFORMS=cpu
   export PYTHONUNBUFFERED=1
   export TUNIX_TRACE_ROLLOUTS="$TRACE_ROLLOUTS"
+  export LOG_DIR="$LOG_DIR"
   export WANDB_PROJECT="$WANDB_PROJECT"
   export WANDB_RUN_NAME="$WANDB_RUN_NAME"
   export WANDB_API_KEY="$WANDB_API_KEY"

@@ -54,6 +54,7 @@ if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
 from tunix.experimental.common import datatypes  # pylint: disable=g-import-not-at-top
+from tunix.sft import metrics_logger as metrics_logger_lib  # pylint: disable=g-import-not-at-top
 from tunix.experimental.examples.math_gsm8k_dist import (  # pylint: disable=g-import-not-at-top
     gsm8k,
 )
@@ -145,6 +146,24 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument(
       "--shuffle", action=argparse.BooleanOptionalAction, default=True
   )
+  parser.add_argument(
+      "--log_dir",
+      type=str,
+      default=os.getenv("LOG_DIR", "/tmp/trellis_gsm8k"),
+      help="Directory for local event logging (TensorBoard/CLU).",
+  )
+  parser.add_argument(
+      "--wandb_project",
+      type=str,
+      default=os.getenv("WANDB_PROJECT", "trellis-gsm8k"),
+      help="W&B project name.",
+  )
+  parser.add_argument(
+      "--wandb_run_name",
+      type=str,
+      default=os.getenv("WANDB_RUN_NAME", ""),
+      help="W&B run name. Defaults to a timestamp-based name if unset.",
+  )
   parser.add_argument("--rpc_timeout_s", type=float, default=1800.0)
   parser.add_argument("--inference_addr", type=str, default="")
   parser.add_argument("--stop_workers_on_exit", action="store_true")
@@ -203,6 +222,17 @@ def _build_gsm8k_dataset(args: argparse.Namespace) -> grain.MapDataset:
   )
 
 
+# Rollout samples scored during the current step, drained by
+# `_log_rollout_samples` at the step boundary. The critique stage and the
+# on_step_end callback both run on the orchestrator's event loop, so a plain
+# list needs no locking.
+_ROLLOUT_SAMPLES: list[dict[str, Any]] = []
+
+# Completion text is truncated before it reaches W&B; full text stays in the
+# orchestrator log.
+_SAMPLE_TEXT_CHARS = 600
+
+
 def _make_reward_fn(mode: str):
   """Creates the optional orchestrator-side reward function."""
   if mode == "env":
@@ -211,12 +241,103 @@ def _make_reward_fn(mode: str):
   def reward_fn(item: datatypes.TrajectoryItem) -> float:
     metadata = dict(item.metadata or {})
     text = str(metadata.get("text", ""))
-    reward, _ = gsm8k.score_gsm8k_completion(
-        text, metadata.get("answer", metadata.get("gold_answer"))
-    )
+    gold = metadata.get("answer", metadata.get("gold_answer"))
+    reward, details = gsm8k.score_gsm8k_completion(text, gold)
+
+    # score_gsm8k_completion is shaped, not 0/1: 1.0 format+answer, 0.5 answer
+    # only, 0.1 format only, 0.0 neither. Recording the two component flags
+    # makes it possible to tell in W&B which half a partial reward came from,
+    # and to see reward variance within a GRPO group -- with no variance the
+    # group-normalised advantage is identically zero and the step contributes
+    # no gradient.
+    _ROLLOUT_SAMPLES.append({
+        "prompt_id": str(metadata.get("prompt_id", metadata.get("prefix_hash", ""))),
+        "pair_index": int(metadata.get("pair_index", item.pair_index)),
+        "gold_answer": str(details.get("gold_answer", gold) or ""),
+        "extracted": str(details.get("extracted_answer") or ""),
+        "format_correct": bool(details.get("format_correct")),
+        "answer_correct": bool(details.get("answer_correct")),
+        "reward": float(reward),
+        "num_completion_tokens": (
+            len(item.completion_tokens)
+            if item.completion_tokens is not None
+            else 0
+        ),
+        "text_chars": len(text),
+        "text": text[:_SAMPLE_TEXT_CHARS],
+    })
     return reward
 
   return reward_fn
+
+
+def _log_rollout_samples(step: int) -> None:
+  """Drains the step's scored samples to the orchestrator log and W&B."""
+  samples, _ROLLOUT_SAMPLES[:] = list(_ROLLOUT_SAMPLES), []
+  if not samples:
+    # Expected under --reward_mode=env: the reward is computed by the rollout
+    # environment, so the orchestrator-side hook this drains never runs.
+    logging.info("[rollout samples] step %d produced no scored samples.", step)
+    return
+
+  # Log the whole step, not a prefix. Capping at 2 previously hid that every
+  # member of a group was decoding identically, because the two printed rows
+  # were the same prompt's pair 0 and pair 1.
+  for sample in samples:
+    logging.info(
+        "[rollout sample] step=%d prompt=%s pair=%d gold=%s extracted=%s"
+        " format_ok=%s answer_ok=%s reward=%.3f completion_tokens=%d"
+        " completion=%r",
+        step,
+        sample["prompt_id"],
+        sample["pair_index"],
+        sample["gold_answer"],
+        sample["extracted"],
+        sample["format_correct"],
+        sample["answer_correct"],
+        sample["reward"],
+        sample["num_completion_tokens"],
+        sample["text"],
+    )
+
+  rewards = [s["reward"] for s in samples]
+  logging.info(
+      "[rollout samples] step=%d n=%d reward_min=%.3f reward_max=%.3f"
+      " distinct_rewards=%d",
+      step,
+      len(samples),
+      min(rewards),
+      max(rewards),
+      len(set(rewards)),
+  )
+
+  try:
+    import wandb  # pylint: disable=g-import-not-at-top
+  except ImportError:
+    return
+  if wandb.run is None:
+    return
+
+  columns = [
+      "step",
+      "prompt_id",
+      "pair_index",
+      "gold_answer",
+      "extracted",
+      "format_correct",
+      "answer_correct",
+      "reward",
+      "num_completion_tokens",
+      "text_chars",
+      "text",
+  ]
+  table = wandb.Table(
+      columns=columns,
+      data=[[step] + [s[c] for c in columns[1:]] for s in samples],
+  )
+  # Same step key the metrics logger uses, so the table lands on the step's
+  # existing history row instead of opening a new one.
+  wandb.run.log({"rollout/samples": table}, step=step)
 
 
 def _grpo_model_input(
@@ -597,6 +718,27 @@ def main(argv: list[str], context: Any = None) -> None:
   logging.info("Registered Orchestrator V2 workers: %s", cluster.worker_infos())
 
   reward_fn = _make_reward_fn(args.reward_mode)
+
+  metrics_logging_options = metrics_logger_lib.MetricsLoggerOptions(
+      log_dir=args.log_dir,
+      project_name=args.wandb_project,
+      run_name=args.wandb_run_name,
+      flush_every_n_steps=1,
+      backend_kwargs={
+          "wandb": {
+              "config": vars(args),
+          }
+      },
+  )
+
+  def _on_step_end(step: int, result: Any) -> None:
+    logging.info(
+        "Async GRPO advanced to policy_version=%d train_result=%s.",
+        step,
+        result,
+    )
+    _log_rollout_samples(step)
+
   program = rl_program.StandardRLProgram(
       algo=algo,
       dataset=_iter_prompt_items(args),
@@ -608,16 +750,13 @@ def main(argv: list[str], context: Any = None) -> None:
           max_response_length=args.train_max_response_length,
           pad_id=pad_id,
       ),
+      metrics_logging_options=metrics_logging_options,
       max_staleness=args.max_staleness,
       sync_weights=args.sync_weights,
       on_step_begin=lambda step: logging.info(
           "Async GRPO step %d starting.", step
       ),
-      on_step_end=lambda step, result: logging.info(
-          "Async GRPO advanced to policy_version=%d train_result=%s.",
-          step,
-          result,
-      ),
+      on_step_end=_on_step_end,
   )
 
   try:
@@ -631,6 +770,10 @@ def main(argv: list[str], context: Any = None) -> None:
         bring_up=False,
     )
   finally:
+    # Flushes buffered metrics and calls wandb.finish(). W&B only commits a
+    # history row on step advance or finish, so skipping this discards the
+    # final step's row entirely.
+    program.close()
     if args.stop_workers_on_exit:
       cluster.shutdown()
     else:
