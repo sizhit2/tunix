@@ -15,11 +15,13 @@
 """Vanilla Sampler adapter using Tunix JAX Sampler."""
 
 import abc
+import hashlib
 import numbers
 from typing import Any, List, Sequence
 from absl import logging
 import numpy as np
 from tunix.experimental.rollout import sampler as base_sampler_lib
+from tunix.experimental.weight_sync import raiden_weight_sync_delegate
 from tunix.experimental.weight_sync import weight_sync
 from tunix.generate import sampler as generate_sampler_lib
 
@@ -70,8 +72,6 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     )
 
     if self.enable_raiden and self.raiden_sync_delegate is None:
-      from tunix.experimental.weight_sync import raiden_weight_sync_delegate  # pylint: disable=g-import-not-at-top
-
       self.raiden_sync_delegate = (
           raiden_weight_sync_delegate.RaidenWeightSyncDelegate()
       )
@@ -250,6 +250,19 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     top_p = top_ps[0] if top_ps else None
     top_k = top_ks[0] if top_ks else None
     seed = seeds[0] if seeds else None
+    if seed is None:
+      # The native sampler is deterministic for a fixed seed, and a GRPO group
+      # is sampled by separate sample() calls sharing one prompt -- so leaving
+      # the seed unset makes every member of the group decode identically,
+      # which yields zero advantage and no gradient. Derive it from the
+      # request id (the trajectory id, unique per group member) so members
+      # differ while runs stay reproducible. This is deliberately local to the
+      # vanilla path: the vLLM JAX backend rejects a per-request seed.
+      req_ids = "|".join(
+          str(getattr(r, "request_id", "") or "") for r in requests
+      )
+      if req_ids.strip("|"):
+        seed = int(hashlib.sha256(req_ids.encode()).hexdigest()[:8], 16)
     return_logprobs = any(return_logprobs_list) or kwargs.get(
         "return_logprobs", False
     )

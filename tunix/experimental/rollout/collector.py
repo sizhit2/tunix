@@ -78,6 +78,12 @@ class TrajectoryCollectorEngine:
       if max_generation_steps is not None:
         generation_kwargs["max_tokens"] = max_generation_steps
 
+      # NB: do not synthesise a per-request seed here. The vLLM JAX/TPU
+      # backend rejects one outright ("JAX does not support per-request
+      # seed."), which fails every rollout. Sampling diversity within a GRPO
+      # group is the sampler's responsibility; vLLM already varies its
+      # completions, while vanilla_sampler_adapter collapses a batch to
+      # seeds[0] and needs fixing there, not here.
       sampling_params = sampler_lib.SamplingParams(
           max_tokens=generation_kwargs.get("max_tokens", 64),
           temperature=generation_kwargs.get("temperature", 0.0),
@@ -123,6 +129,12 @@ class TrajectoryCollectorEngine:
         model_call=model_call,  # pyrefly: ignore[bad-argument-type]
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
+        # Without this the engine passes max_generation_steps=None, model_call
+        # finds no "max_tokens" key and falls back to 64 -- so a caller asking
+        # for 128 silently got 64 and completions were truncated mid-answer.
+        max_response_length=self.request.generation_kwargs.get(
+            "max_generation_steps"
+        ),
     )
     rl_traj = await inner_engine.collect(mode="Trajectory")
     self.is_done = True
@@ -131,14 +143,15 @@ class TrajectoryCollectorEngine:
   def _convert_to_trajectory(self, rl_traj: Any) -> trajectory_lib.Trajectory:
     """Converts internal rollout trajectory to standardized Trajectory format."""
     metadata = dict(self.request.metadata or {})
-    metadata["prompt_id"] = self.request.prompt_id
-    metadata["group_index"] = self.request.group_index
     assistant_text = "\n".join(
         str(getattr(step, "model_response", ""))
         for step in getattr(rl_traj, "steps", [])
         if getattr(step, "model_response", "")
     )
     metadata.setdefault("text", assistant_text)
+    metadata.setdefault("prompt_id", self.request.prompt_id)
+    metadata.setdefault("group_id", self.request.prompt_id)
+    metadata.setdefault("pair_index", self.request.group_offset_id or 0)
     metadata["prompt_tokens"] = np.asarray(
         getattr(rl_traj, "prompt_tokens", np.zeros(0, dtype=np.int32)),
         dtype=np.int32,
