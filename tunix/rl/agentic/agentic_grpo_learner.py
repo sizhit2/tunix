@@ -256,13 +256,13 @@ class GRPOLearner(agentic_rl_learner.AgenticRLLearner[TGrpoConfig]):
         }
     )
     self.rl_engine.actor_trainer.with_rl_metrics_to_log({  # pyrefly: ignore[bad-argument-type]
-        "kl": common.mean_of_means,
+        "kl": common.token_weighted_mean,
         "entropy": common.mean_of_means,
         "reduced_pg_loss": common.mean_of_means,
         "unreduced_pg_loss": common.global_weighted_mean,
-        "pg_clipfrac": common.mean_of_means,
-        "ppo_kl": common.mean_of_means,
-        "kl_loss": common.mean_of_means,
+        "pg_clipfrac": common.token_weighted_mean,
+        "ppo_kl": common.token_weighted_mean,
+        "kl_loss": common.token_weighted_mean,
         "is_ratio/mean": common.mean_of_means,
         "is_ratio/max": np.max,
         "is_ratio/min": np.min,

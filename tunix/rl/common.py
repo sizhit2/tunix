@@ -1133,6 +1133,26 @@ def global_weighted_mean(values: Iterable[utils.WeightedMetric]) -> float:
   return total_sum / total_denom if total_denom != 0 else 0.0
 
 
+def token_weighted_mean(values: Iterable[Any]) -> float:
+  """Reducer: token-weighted mean, falling back to a plain mean.
+
+  For WeightedMetric values this is sum(numerators)/sum(denominators), i.e.
+  `global_weighted_mean`. That is the correct step-level value for a per-token
+  metric: the denominator is the micro-batch's completion token count, so
+  averaging per-micro-batch means (`mean_of_means`) weights a 100-token
+  completion the same as a 500-token one. With 50 clipped tokens in each, the
+  true clip fraction is 100/600 = 0.167 while mean_of_means reports
+  (0.10 + 0.50)/2 = 0.300.
+
+  Values that are not WeightedMetric carry no denominator, so there is nothing
+  to weight by and they reduce with a plain mean.
+  """
+  values = list(values)
+  if values and all(isinstance(v, utils.WeightedMetric) for v in values):
+    return global_weighted_mean(values)
+  return float(mean_of_means(values))
+
+
 def compute_entropy_from_logits(logits: jax.Array) -> jax.Array:
   """Computes the entropy of a distribution given its logits.
 

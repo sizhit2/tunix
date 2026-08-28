@@ -638,6 +638,43 @@ class CommonTest(parameterized.TestCase):
         places=3,
     )
 
+  def test_token_weighted_mean_is_token_weighted_for_weighted_metrics(self):
+    # The per-token case the RL metric maps care about: pg_clipfrac and friends
+    # carry token_denom = sum(completion_mask), so a step's true value is
+    # sum(clipped)/sum(tokens). mean_of_means weights a short completion the
+    # same as a long one and overstates it badly.
+    metrics = [
+        utils.WeightedMetric(jnp.array(50.0), jnp.array(500.0)),  # 0.10
+        utils.WeightedMetric(jnp.array(50.0), jnp.array(100.0)),  # 0.50
+    ]
+    self.assertAlmostEqual(
+        common.token_weighted_mean(metrics), 100.0 / 600.0, places=6
+    )
+    self.assertAlmostEqual(
+        common.token_weighted_mean(metrics),
+        common.global_weighted_mean(metrics),
+        places=6,
+    )
+    # mean_of_means would report 0.30 for the same step.
+    self.assertAlmostEqual(float(common.mean_of_means(metrics)), 0.30, places=6)
+
+  def test_token_weighted_mean_falls_back_to_mean_for_scalars(self):
+    # Plain scalars carry no denominator, so there is nothing to weight by.
+    self.assertAlmostEqual(
+        common.token_weighted_mean([0.1, 0.5]), 0.3, places=6
+    )
+
+  def test_token_weighted_mean_matches_mean_of_means_when_denoms_equal(self):
+    metrics = [
+        utils.WeightedMetric(jnp.array(10.0), jnp.array(100.0)),
+        utils.WeightedMetric(jnp.array(50.0), jnp.array(100.0)),
+    ]
+    self.assertAlmostEqual(
+        common.token_weighted_mean(metrics),
+        float(common.mean_of_means(metrics)),
+        places=6,
+    )
+
   def test_global_weighted_mean_zero_denominator(self):
     metrics = [utils.WeightedMetric(jnp.array(0.0), jnp.array(0.0))]
     self.assertEqual(common.global_weighted_mean(metrics), 0.0)
