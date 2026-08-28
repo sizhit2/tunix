@@ -176,9 +176,16 @@ def _metric_reducer(metric: Any, name: str = "") -> Callable[[Any], Any]:
   """
   if isinstance(metric, _WEIGHTED_METRIC_TYPES):
     return _weighted_metric_mean
-  if name.endswith("/min"):
+  # Both separators occur in the aux metric names algo_core emits:
+  # "advantage/min" and "is_ratio/max" use "/", while "sampler_is/weight_min"
+  # ends in "_min". Matching only "/min" silently left the latter on the mean
+  # reducer. This mirrors agentic_grpo_learner's explicit map, which pins
+  # np.min/np.max for advantage/{min,max}, is_ratio/{min,max} and
+  # sampler_is/weight_min.
+  leaf = name.rsplit("/", 1)[-1]
+  if leaf == "min" or leaf.endswith("_min"):
     return np.min
-  if name.endswith("/max"):
+  if leaf == "max" or leaf.endswith("_max"):
     return np.max
   return np.mean
 
