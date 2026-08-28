@@ -119,11 +119,11 @@ def trace_request(req: Any) -> None:
   if not enabled():
     return
   logging.info(
-      "[rollout-trace] REQUEST request_id=%s prompt_id=%s group_offset=%s"
+      "[rollout-trace] REQUEST request_id=%s prompt_id=%s group_index=%s"
       " target_pv=%s max_turns=%s gen_kwargs=%s metadata=%s prompt=%s",
       getattr(req, "request_id", None),
       getattr(req, "prompt_id", None),
-      getattr(req, "group_offset_id", None),
+      getattr(req, "group_index", None),
       getattr(req, "target_policy_version", None),
       getattr(req, "max_turns", None),
       getattr(req, "generation_kwargs", None),

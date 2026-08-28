@@ -252,7 +252,7 @@ def _make_reward_fn(mode: str):
     # no gradient.
     _ROLLOUT_SAMPLES.append({
         "prompt_id": str(metadata.get("prompt_id", metadata.get("prefix_hash", ""))),
-        "pair_index": int(metadata.get("pair_index", item.pair_index)),
+        "group_index": int(metadata.get("group_index", item.group_index)),
         "gold_answer": str(details.get("gold_answer", gold) or ""),
         "extracted": str(details.get("extracted_answer") or ""),
         "format_correct": bool(details.get("format_correct")),
@@ -285,12 +285,12 @@ def _log_rollout_samples(step: int) -> None:
   # were the same prompt's pair 0 and pair 1.
   for sample in samples:
     logging.info(
-        "[rollout sample] step=%d prompt=%s pair=%d gold=%s extracted=%s"
+        "[rollout sample] step=%d prompt=%s g=%d gold=%s extracted=%s"
         " format_ok=%s answer_ok=%s reward=%.3f completion_tokens=%d"
         " completion=%r",
         step,
         sample["prompt_id"],
-        sample["pair_index"],
+        sample["group_index"],
         sample["gold_answer"],
         sample["extracted"],
         sample["format_correct"],
@@ -321,7 +321,7 @@ def _log_rollout_samples(step: int) -> None:
   columns = [
       "step",
       "prompt_id",
-      "pair_index",
+      "group_index",
       "gold_answer",
       "extracted",
       "format_correct",
