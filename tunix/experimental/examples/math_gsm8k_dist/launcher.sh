@@ -76,6 +76,9 @@ EPSILON=${EPSILON:-0.2}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-50}
 LORA_RANK=${LORA_RANK:-64}
 LORA_ALPHA=${LORA_ALPHA:-64.0}
+# Traces dataset item -> rollout request -> rollout response -> DTO into
+# the orchestrator log. Off by default: one line per hop per rollout.
+TRACE_ROLLOUTS=${TRACE_ROLLOUTS:-0}
 USE_LORA=${USE_LORA:-0}
 SYNC_WEIGHTS=${SYNC_WEIGHTS:-0}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-raiden}
@@ -421,6 +424,7 @@ echo "  prompt length:  $MAX_PROMPT_LENGTH"
 echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train response: $TRAIN_MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
+echo "  trace rollouts: $TRACE_ROLLOUTS"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
 echo "  sync weights:   $SYNC_WEIGHTS"
@@ -749,6 +753,10 @@ echo "Launching CPU orchestrator..."
 
   export JAX_PLATFORMS=cpu
   export PYTHONUNBUFFERED=1
+  export TUNIX_TRACE_ROLLOUTS="$TRACE_ROLLOUTS"
+  export WANDB_PROJECT="$WANDB_PROJECT"
+  export WANDB_RUN_NAME="$WANDB_RUN_NAME"
+  export WANDB_API_KEY="$WANDB_API_KEY"
   env | egrep 'JAX|TPU'
   print_command "Orchestrator command" "${ORCHESTRATOR_CMD[@]}"
   "${ORCHESTRATOR_CMD[@]}" > "$ORCHESTRATOR_LOG" 2>&1
