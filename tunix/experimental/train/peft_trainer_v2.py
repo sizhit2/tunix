@@ -121,6 +121,56 @@ class TrainingInput:
   images: jax.Array | np.ndarray | None = None
 
 
+# Loss functions may emit either WeightedMetric flavour; _write_metrics already
+# treats the two interchangeably, so the reducer must recognise both.
+_WEIGHTED_METRIC_TYPES = (utils.WeightedMetric, exp_metrics.WeightedMetric)
+
+
+def _weighted_metric_mean(values: Iterable[Any]) -> float:
+  """Aggregates unreduced metrics without microbatch-mean bias."""
+  values = list(values)
+  if not values:
+    return 0.0
+  if not all(isinstance(value, _WEIGHTED_METRIC_TYPES) for value in values):
+    raise TypeError("weighted metrics must not include scalar values")
+
+  eps = values[0].eps
+  min_denom = values[0].min_denom
+  if any(
+      value.eps != eps or value.min_denom != min_denom for value in values[1:]
+  ):
+    raise ValueError("weighted metrics must use consistent denominator bounds")
+
+  numerator = sum(float(np.asarray(value.unreduced_sum)) for value in values)
+  denominator = sum(float(np.asarray(value.denominator)) for value in values)
+  if eps is not None:
+    denominator += eps
+  if min_denom is not None:
+    denominator = max(denominator, min_denom)
+  return numerator / denominator if denominator else 0.0
+
+
+def _metric_reducer(metric: Any) -> Callable[[Any], Any]:
+  """Selects the reduction that matches a buffered auxiliary metric.
+
+  A WeightedMetric carries its own unreduced numerator and denominator, so the
+  microbatches of a step must be combined as sum(num)/sum(denom); averaging the
+  per-microbatch means would bias the result whenever the denominators differ
+  (e.g. unequal completion lengths). Plain scalars reduce with a mean.
+
+  Args:
+    metric: One buffered auxiliary metric value.
+
+  Returns:
+    The callable used to reduce that metric's per-microbatch list.
+  """
+  return (
+      _weighted_metric_mean
+      if isinstance(metric, _WEIGHTED_METRIC_TYPES)
+      else np.mean
+  )
+
+
 @dataclasses.dataclass(slots=True, kw_only=True)
 class MetricsBuffer:
   """Metrics collected for a specific step.
@@ -1025,11 +1075,26 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
 
   def _record_fwd_bwd(self, train_loss: ArrayLike, aux: Any) -> None:
     """Bookkeeping for one forward/backward pass, independent of how it ran."""
+    # `aux` is the loss function's aux_metrics mapping (see the fwd_bwd step
+    # functions, which return `LossOutput.aux_metrics` rather than the
+    # LossOutput). Buffer it so algorithm diagnostics -- "advantage/*",
+    # "is_ratio/*", "pg_clipfrac", "ppo_kl" and friends -- reach get_metrics()
+    # and the metrics logger, matching peft_trainer.py. Without this the buffer
+    # only ever carries loss and grad_norm and every aux metric is dropped.
+    additional_metrics = None
+    if isinstance(aux, Mapping):
+      additional_metrics = {
+          name: (metric, _metric_reducer(metric))
+          for name, metric in aux.items()
+      }
     self._buffered_train_metrics = self._buffer_metrics(
         self._buffered_train_metrics,
         loss=train_loss,
         step=self._train_steps,
+        additional_metrics=additional_metrics,
     )
+    # NB: must follow _buffer_metrics, which creates the buffer that
+    # _post_process_train_step overrides append to.
     self._post_process_train_step(aux)
 
   def _record_update(self, grad_norm: ArrayLike) -> int:
