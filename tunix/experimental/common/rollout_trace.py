@@ -49,13 +49,30 @@ _TEXT_CHARS = 600
 _TOKEN_HEAD = 12
 
 
+class _Missing:
+  """Distinguishes an absent key from one holding an empty value."""
+
+  def __repr__(self) -> str:
+    return "<absent>"
+
+
+_MISSING = _Missing()
+
+
 def enabled() -> bool:
   """Returns whether rollout tracing is turned on for this process."""
   return os.environ.get(_ENV_VAR, "").strip().lower() in _TRUTHY
 
 
 def _preview(value: Any) -> str:
-  """Renders a value as a repr truncated to `_TEXT_CHARS`."""
+  """Renders a value as a repr truncated to `_TEXT_CHARS`.
+
+  An empty completion is a real and interesting result, so it is rendered as
+  `''` rather than skipped; a key that was never set renders as `<absent>`, so
+  the two cannot be confused.
+  """
+  if isinstance(value, _Missing):
+    return repr(value)
   text = value if isinstance(value, str) else repr(value)
   if len(text) <= _TEXT_CHARS:
     return repr(text) if isinstance(value, str) else text
@@ -138,7 +155,7 @@ def trace_response(resp: Any) -> None:
       _tokens(getattr(resp, "prompt_tokens", None)),
       seg_desc,
       _redact_text(metadata),
-      _preview(metadata.get("text", "")),
+      _preview(metadata.get("text", _MISSING)),
   )
 
 
@@ -159,7 +176,7 @@ def trace_trajectory_item(item: Any) -> None:
       _tokens(getattr(item, "prompt_tokens", None)),
       _tokens(getattr(item, "completion_tokens", None)),
       len(getattr(traj, "steps", None) or []),
-      _preview(metadata.get("text", "")),
+      _preview(metadata.get("text", _MISSING)),
   )
 
 
