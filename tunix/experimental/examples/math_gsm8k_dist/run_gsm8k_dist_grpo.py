@@ -531,10 +531,6 @@ def main(argv: list[str], context: Any = None) -> None:
       project_name=args.wandb_project,
       run_name=args.wandb_run_name,
       flush_every_n_steps=1,
-      # The orchestrator metric names already namespace themselves
-      # ("rollout/...", "rewards/...", "orchestrator/...", "trainer/..."), so
-      # the extra "train/" mode level would only add noise in W&B.
-      include_mode_in_metric_name=False,
       backend_kwargs={
           "wandb": {
               "config": vars(args),

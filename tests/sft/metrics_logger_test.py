@@ -149,28 +149,6 @@ class MetricLoggerTest(absltest.TestCase):
     self.assertAlmostEqual(history[1], 0.05)
 
   @mock.patch.object(jax.monitoring, "record_scalar")
-  def test_mode_can_be_excluded_from_metric_name(self, mock_record_scalar):
-    options = metrics_logger.MetricsLoggerOptions(
-        log_dir=self.log_dir,
-        include_mode_in_metric_name=False,
-        backend_kwargs={"custom_backend": []},
-    )
-    logger = metrics_logger.MetricsLogger(metrics_logger_options=options)
-    logger.log("", "rollout/success_rate", 1.0, metrics_logger.Mode.TRAIN, 1)
-    logger.log("test_prefix", "loss", 0.1, metrics_logger.Mode.TRAIN, 1)
-    mock_record_scalar.assert_has_calls([
-        mock.call("/rollout/success_rate", 1.0, step=1),
-        mock.call("test_prefix/loss", 0.1, step=1),
-    ])
-    # The mode is dropped from the exported name only; local history keeps it.
-    self.assertTrue(
-        logger.metric_exists("", "rollout/success_rate", "train")
-    )
-    self.assertAlmostEqual(
-        logger.get_metric("", "rollout/success_rate", "train"), 1.0
-    )
-
-  @mock.patch.object(jax.monitoring, "record_scalar")
   def test_log_perplexity(self, mock_record_scalar):
     options = metrics_logger.MetricsLoggerOptions(
         log_dir=self.log_dir, backend_kwargs={"custom_backend": []}
