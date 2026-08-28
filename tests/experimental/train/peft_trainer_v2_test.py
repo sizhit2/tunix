@@ -774,6 +774,61 @@ class PeftTrainerTest(parameterized.TestCase):
         metrics.weighted_metrics['foo'], sft_utils.WeightedMetric
     )
 
+  def test_loss_aux_metrics_reach_get_metrics_without_hook(self):
+    """Aux metrics are buffered without a _post_process_train_step override.
+
+    The distributed RL path uses PeftTrainer directly, so algorithm diagnostics
+    (advantage/*, is_ratio/*, ppo_kl, ...) must survive to get_metrics() without
+    each caller reimplementing the hook.
+    """
+
+    def custom_loss_fn(
+        model: nnx.Module,
+        input_tokens: jax.Array,
+        input_mask: jax.Array,
+        positions: jax.Array,
+        attention_mask: jax.Array,
+    ) -> sft_utils.LossOutput:
+      del model, input_tokens, input_mask, positions, attention_mask
+      return sft_utils.LossOutput(
+          primary_loss=sft_utils.WeightedMetric(
+              jnp.array(2.0, dtype=jnp.float32),
+              jnp.array(2.0, dtype=jnp.float32),
+          ),
+          aux_metrics={
+              # Plain scalar: reduced with a mean across microbatches.
+              'advantage/abs_mean': jnp.array(0.75, dtype=jnp.float32),
+              # Weighted: reduced as sum(numerator)/sum(denominator).
+              'ppo_kl': sft_utils.WeightedMetric(
+                  jnp.array(6.0, dtype=jnp.float32),
+                  jnp.array(2.0, dtype=jnp.float32),
+              ),
+          },
+      )
+
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=100)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    trainer = peft_trainer_v2.PeftTrainer(model, optax.sgd(1e-3), config)
+    trainer = trainer.with_gen_model_input_fn(
+        dummy_gen_model_input_fn
+    ).with_loss_fn(custom_loss_fn)
+
+    trainer.train(self.train_ds, self.eval_ds)
+
+    metrics = trainer.get_metrics()
+    self.assertIn('advantage/abs_mean', metrics.scalar_metrics)
+    self.assertAlmostEqual(
+        float(metrics.scalar_metrics['advantage/abs_mean']), 0.75, places=5
+    )
+    # A WeightedMetric is reduced to its scalar value before it is written.
+    self.assertIn('ppo_kl', metrics.scalar_metrics)
+    self.assertAlmostEqual(
+        float(metrics.scalar_metrics['ppo_kl']), 3.0, places=5
+    )
+    # The pre-existing metrics keep working.
+    self.assertIn('grad_norm', metrics.scalar_metrics)
+    self.assertIn('loss', metrics.scalar_metrics)
+
   def test_empty_eval_dataset(self):
     config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=100)
     model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
@@ -1150,7 +1205,6 @@ class GradientAccumulatorTest(parameterized.TestCase):
     self.assertNotEmpty(param_dtypes)
     for dt in param_dtypes:
       self.assertEqual(dt, jnp.bfloat16)
-
 
 if __name__ == '__main__':
   absltest.main()
