@@ -216,6 +216,9 @@ def _create_vanilla_worker(args, tokenizer):
       cache_config=args.max_prompt_length + args.max_response_length,
       config=config,
       raiden_sync_delegate=raiden_delegate,
+      # Generation must run inside the mesh the params are sharded over; the
+      # `with mesh:` above only covers model construction.
+      mesh=mesh,
   )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)

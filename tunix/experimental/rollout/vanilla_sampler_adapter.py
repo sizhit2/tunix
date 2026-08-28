@@ -15,6 +15,7 @@
 """Vanilla Sampler adapter using Tunix JAX Sampler."""
 
 import abc
+import contextlib
 import hashlib
 import numbers
 from typing import Any, List, Sequence
@@ -25,6 +26,34 @@ from tunix.experimental.weight_sync import weight_sync
 from tunix.generate import sampler as generate_sampler_lib
 
 Sampler = base_sampler_lib.Sampler
+
+
+def _infer_mesh(transformer: Any) -> Any:
+  """Best-effort recovery of the mesh a model's parameters are sharded over.
+
+  Used when the caller does not pass `mesh=` explicitly. Returns None if no
+  sharded array with a mesh is found, in which case sampling runs without a
+  mesh context exactly as before.
+  """
+  if transformer is None:
+    return None
+  try:
+    import jax  # pylint: disable=g-import-not-at-top
+    from flax import nnx  # pylint: disable=g-import-not-at-top
+
+    try:
+      leaves = jax.tree.leaves(nnx.state(transformer))
+    except Exception:  # pylint: disable=broad-except
+      leaves = jax.tree.leaves(transformer)
+    for leaf in leaves:
+      value = getattr(leaf, "value", leaf)
+      sharding = getattr(value, "sharding", None)
+      mesh = getattr(sharding, "mesh", None)
+      if mesh is not None and getattr(mesh, "devices", None) is not None:
+        return mesh
+  except Exception:  # pylint: disable=broad-except
+    return None
+  return None
 
 
 class VanillaSamplerAdapter(Sampler, abc.ABC):
@@ -55,6 +84,7 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
       model: Any = None,
       config: Any = None,
       raiden_sync_delegate: Any = None,
+      mesh: Any = None,
       **kwargs,
   ):
     self.server_id = server_id
@@ -63,6 +93,14 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     self.image_processor = image_processor
     self.config = config
     self.raiden_sync_delegate = raiden_sync_delegate
+    # The mesh the model's parameters are sharded over. Generation must run
+    # inside it: the caller builds the model under `with mesh:` but that only
+    # covers construction, and sample() runs later on the worker's event loop
+    # with no mesh installed. Named-axis shardings then fail to resolve with
+    #   "Resource axis: tp of P('tp', None) is not found in mesh: ()".
+    # Mirrors the non-distributed path, which wraps its generate calls in
+    # _get_mesh_and_logical_axis_rules_cm(Role.ROLLOUT).
+    self.mesh = mesh if mesh is not None else _infer_mesh(transformer)
     self.weight_sync_mode = getattr(
         config, "weight_sync_mode", weight_sync.WeightSyncMode.FALLBACK
     )
@@ -272,17 +310,31 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     )
     beam_size = beam_sizes[0] if beam_sizes else None
 
-    sampler_output = self.sampler(
-        input_strings=prompts,
-        max_generation_steps=max_generation_steps,
-        temperature=temperature,
-        top_p=top_p,
-        top_k=top_k,
-        seed=seed,
-        beam_size=beam_size,
-        return_logits=return_logits,
-        return_logprobs=return_logprobs,
-    )
+    # nullcontext when no mesh could be determined, preserving prior behaviour
+    # for single-device or already-inside-a-mesh callers. jax.set_mesh is the
+    # supported way to install a mesh as of jax 0.11; bare `with mesh:` is
+    # deprecated ("please use jax.set_mesh(mesh) instead").
+    mesh_cm = contextlib.nullcontext()
+    if self.mesh is not None:
+      import jax  # pylint: disable=g-import-not-at-top
+
+      mesh_cm = (
+          jax.set_mesh(self.mesh)
+          if hasattr(jax, "set_mesh")
+          else self.mesh
+      )
+    with mesh_cm:
+      sampler_output = self.sampler(
+          input_strings=prompts,
+          max_generation_steps=max_generation_steps,
+          temperature=temperature,
+          top_p=top_p,
+          top_k=top_k,
+          seed=seed,
+          beam_size=beam_size,
+          return_logits=return_logits,
+          return_logprobs=return_logprobs,
+      )
 
     responses = []
     for i, req in enumerate(requests):

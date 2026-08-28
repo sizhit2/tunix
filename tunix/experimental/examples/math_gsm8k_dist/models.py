@@ -20,6 +20,8 @@ destination expose identically named tensors.
 
 from __future__ import annotations
 
+import os
+
 from jax import numpy as jnp
 from jax.sharding import Mesh
 from tunix.models.gemma import model as gemma_model_lib
@@ -50,7 +52,16 @@ def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
   config.shd_config = qwen3_model_lib.ShardingConfig.get_default_sharding()
   config.remat_config = qwen3_model_lib.RematConfig.NONE
   config.use_flash_attention = True
-  config.flash_attention_block_size = 256
+  # Splash attention requires the block size to divide the query sequence
+  # length, and the native (vanilla) sampler pads prompts to 128, so a block
+  # size of 256 fails with
+  #   ValueError: q_block_size=256 should divide q_seq_len=128.
+  # 128 divides every bucket the demo produces (128/256/512/768). The vLLM
+  # rollout path never hit this because it uses its own attention kernels.
+  # Overridable for shorter buckets or perf tuning.
+  config.flash_attention_block_size = int(
+      os.getenv("FLASH_ATTENTION_BLOCK_SIZE", "128")
+  )
   config.dtype = jnp.bfloat16
   config.param_dtype = jnp.float32
   return config
