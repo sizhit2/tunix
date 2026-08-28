@@ -39,6 +39,9 @@ NUM_GENERATIONS=${NUM_GENERATIONS:-2}
 MAX_STEPS=${MAX_STEPS:-1}
 TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
 REWARD_MODE=${REWARD_MODE:-exact}
+# Traces dataset item -> rollout request -> rollout response -> DTO into
+# the orchestrator log. Off by default: one line per hop per rollout.
+TRACE_ROLLOUTS=${TRACE_ROLLOUTS:-0}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$((BATCH_SIZE * NUM_GENERATIONS))}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-1000000}
 LORA_RANK=${LORA_RANK:-16}
@@ -310,6 +313,7 @@ echo "  prompt length:  $MAX_PROMPT_LENGTH"
 echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  reward mode:    $REWARD_MODE"
+echo "  trace rollouts: $TRACE_ROLLOUTS"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
 echo "  sampler:        $SAMPLER"
@@ -603,6 +607,7 @@ echo "Launching CPU orchestrator..."
 
   export JAX_PLATFORMS=cpu
   export PYTHONUNBUFFERED=1
+  export TUNIX_TRACE_ROLLOUTS="$TRACE_ROLLOUTS"
   export WANDB_PROJECT="$WANDB_PROJECT"
   export WANDB_RUN_NAME="$WANDB_RUN_NAME"
   export WANDB_API_KEY="$WANDB_API_KEY"

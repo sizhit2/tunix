@@ -28,6 +28,7 @@ from typing import Any
 from absl import logging
 import numpy as np
 from tunix.experimental.common import datatypes
+from tunix.experimental.common import rollout_trace
 from tunix.experimental.orchestrator import algorithm_adapter
 from tunix.experimental.orchestrator import batch_assembly
 from tunix.experimental.orchestrator import rl_engine_interface
@@ -172,6 +173,9 @@ class StandardRLProgram(RLProgram):
     try:
       for prompt_idx, prompt_item in enumerate(self.dataset):
         await self._wait_for_dispatch_window()
+        # Traced before normalization, so a malformed dataset is visible as
+        # distinct from a malformed request.
+        rollout_trace.trace_dataset_item(prompt_idx, prompt_item)
         if isinstance(prompt_item, dict):
           prompt_item = dict(prompt_item)
           prompt_item.setdefault("prompt_id", f"prompt_{prompt_idx}")
@@ -204,6 +208,7 @@ class StandardRLProgram(RLProgram):
             # `_in_flight_rollouts` to never reach 0, hanging the EOF cascade.
             self._in_flight_rollouts -= len(completed)
             for item in completed:
+              rollout_trace.trace_trajectory_item(item)
               await self.raw_q.put(item)
         except Exception as exc:  # pylint: disable=broad-exception-caught
           logging.warning("Error in polling_stage: %s", exc)

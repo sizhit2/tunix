@@ -28,6 +28,7 @@ import uuid
 
 import numpy as np
 from tunix.experimental.common import datatypes
+from tunix.experimental.common import rollout_trace
 from tunix.experimental.metrics import metrics as exp_metrics
 from tunix.experimental.orchestrator import rl_engine_interface
 from tunix.experimental.worker import remote_execution
@@ -237,6 +238,8 @@ class DistributedRLEngine(rl_engine_interface.AbstractRLEngine):
             )
         )
 
+    for req in rollout_reqs:
+      rollout_trace.trace_request(req)
     return await self.dispatch_rollout_requests(rollout_reqs)
 
   async def poll_rollouts(
@@ -268,6 +271,7 @@ class DistributedRLEngine(rl_engine_interface.AbstractRLEngine):
         for it in items:
           if isinstance(it, dict):
             it = datatypes.RolloutResponse(**it)
+          rollout_trace.trace_response(it)
           completed.append(_response_to_trajectory_item(it))
     return completed
 
