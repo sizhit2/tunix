@@ -30,14 +30,17 @@ for _ in $(seq 1 30); do
   echo -n "."; sleep 10
 done
 
-RUN_NAME="pr2023-${MODEL_NAME:-Qwen3-0.6B}-$(date +%H%M%S)"
+RUN_NAME="pr2023-${SAMPLER:-vanilla}-sync-$(date +%H%M%S)"
 echo "run name: $RUN_NAME"
 docker rm -f pr2023-verify >/dev/null 2>&1 || true
 docker run -d --name pr2023-verify --privileged --net=host --shm-size=16g \
   -v "$HOME/tunix-pr1983:/workspace" -w /workspace \
   -v "${MODEL_HOST_DIR:-/mnt/disk/hf_models/qwen3-0.6b}":/models \
   -e PYTHONPATH=/workspace \
-  -e WEIGHT_SYNC_BACKEND=noop -e SAMPLER="${SAMPLER:-inprocess_vllm}" \
+  -e SAMPLER="${SAMPLER:-vanilla}" \
+  -e SYNC_WEIGHTS="${SYNC_WEIGHTS:-1}" \
+  -e WEIGHT_SYNC_MODE="${WEIGHT_SYNC_MODE:-fallback}" \
+  -e WEIGHT_SYNC_BACKEND="${WEIGHT_SYNC_BACKEND:-no-op}" \
   -e TRACE_ROLLOUTS=1 -e LOG_LEVEL=INFO \
   -e BATCH_SIZE=4 -e NUM_GENERATIONS="${NUM_GENERATIONS:-4}" \
   -e MAX_STEPS="${MAX_STEPS:-3}" -e TRAIN_MICRO_BATCH_SIZE=1 \
