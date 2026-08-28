@@ -191,7 +191,15 @@ def _create_vanilla_worker(args, tokenizer):
   mesh = _create_rollout_mesh(args)
   with mesh:
     model = models.create_model(
-        args.model_name, args.model_dir or args.model_id, mesh
+        args.model_name,
+        args.model_dir or args.model_id,
+        mesh,
+        # The native sampler pads prompts to 128 while the splash attention
+        # block size is 256, so the kernel rejects the shape; running it at
+        # block size 128 instead returns garbage completions
+        # ("</reasoning-r-r-r-r-r..."). Disabled here only -- the trainer keeps
+        # flash attention, whose sequence lengths are multiples of 256.
+        use_flash_attention=False,
     )
   raiden_delegate = (
       raiden_weight_sync_delegate.RaidenWeightSyncDelegate()

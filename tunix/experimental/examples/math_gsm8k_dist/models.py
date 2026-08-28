@@ -39,7 +39,9 @@ def _gemma_config(model_name: str) -> gemma_model_lib.ModelConfig:
   raise ValueError(f"Unsupported gemma model_name: {model_name!r}")
 
 
-def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
+def _qwen3_config(
+    model_name: str, use_flash_attention: bool = True
+) -> qwen3_model_lib.ModelConfig:
   normalized = model_name.lower().replace("_", "-")
   if "0.6b" in normalized or "0p6b" in normalized:
     config = qwen3_model_lib.ModelConfig.qwen3_0p6b()
@@ -51,16 +53,9 @@ def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
     raise ValueError(f"Unsupported qwen3 model_name: {model_name!r}")
   config.shd_config = qwen3_model_lib.ShardingConfig.get_default_sharding()
   config.remat_config = qwen3_model_lib.RematConfig.NONE
-  config.use_flash_attention = True
-  # Splash attention requires the block size to divide the query sequence
-  # length, and the native (vanilla) sampler pads prompts to 128, so a block
-  # size of 256 fails with
-  #   ValueError: q_block_size=256 should divide q_seq_len=128.
-  # 128 divides every bucket the demo produces (128/256/512/768). The vLLM
-  # rollout path never hit this because it uses its own attention kernels.
-  # Overridable for shorter buckets or perf tuning.
+  config.use_flash_attention = use_flash_attention
   config.flash_attention_block_size = int(
-      os.getenv("FLASH_ATTENTION_BLOCK_SIZE", "128")
+      os.getenv("FLASH_ATTENTION_BLOCK_SIZE", "256")
   )
   config.dtype = jnp.bfloat16
   config.param_dtype = jnp.float32
@@ -72,6 +67,7 @@ def create_model(
     model_dir: str,
     mesh: Mesh,
     dtype: jnp.dtype | None = None,
+    use_flash_attention: bool = True,
 ):
   """Builds the demo model on the given mesh.
 
@@ -80,6 +76,13 @@ def create_model(
     model_dir: Directory holding the safetensors shards.
     mesh: Device mesh the parameters are sharded over.
     dtype: Optional safetensors load dtype.
+    use_flash_attention: Whether to use the splash attention kernel. Must be
+      False for the native sampler: splash attention requires the block size to
+      divide the query sequence length, and the sampler pads prompts to 128
+      while the block size is 256, which raises
+      "q_block_size=256 should divide q_seq_len=128". Lowering the block size
+      to 128 makes it run but silently returns garbage completions, so the
+      kernel is disabled for that path rather than reconfigured.
 
   Returns:
     An nnx module ready for training or serving.
@@ -91,6 +94,9 @@ def create_model(
     )
   if "qwen3" in normalized:
     return qwen3_params_lib.create_model_from_safe_tensors(
-        model_dir, _qwen3_config(model_name), mesh, dtype=dtype or jnp.bfloat16
+        model_dir,
+        _qwen3_config(model_name, use_flash_attention=use_flash_attention),
+        mesh,
+        dtype=dtype or jnp.bfloat16,
     )
   raise ValueError(f"Unsupported demo model_name: {model_name!r}")

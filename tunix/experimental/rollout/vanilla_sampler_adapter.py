@@ -16,7 +16,6 @@
 
 import abc
 import contextlib
-import hashlib
 import numbers
 from typing import Any, List, Sequence
 from absl import logging
@@ -289,19 +288,6 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     top_p = top_ps[0] if top_ps else None
     top_k = top_ks[0] if top_ks else None
     seed = seeds[0] if seeds else None
-    if seed is None:
-      # The native sampler is deterministic for a fixed seed, and a GRPO group
-      # is sampled by separate sample() calls sharing one prompt -- so leaving
-      # the seed unset makes every member of the group decode identically,
-      # which yields zero advantage and no gradient. Derive it from the
-      # request id (the trajectory id, unique per group member) so members
-      # differ while runs stay reproducible. This is deliberately local to the
-      # vanilla path: the vLLM JAX backend rejects a per-request seed.
-      req_ids = "|".join(
-          str(getattr(r, "request_id", "") or "") for r in requests
-      )
-      if req_ids.strip("|"):
-        seed = int(hashlib.sha256(req_ids.encode()).hexdigest()[:8], 16)
     return_logprobs = any(return_logprobs_list) or kwargs.get(
         "return_logprobs", False
     )
@@ -310,19 +296,19 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     )
     beam_size = beam_sizes[0] if beam_sizes else None
 
-    # nullcontext when no mesh could be determined, preserving prior behaviour
-    # for single-device or already-inside-a-mesh callers. jax.set_mesh is the
-    # supported way to install a mesh as of jax 0.11; bare `with mesh:` is
-    # deprecated ("please use jax.set_mesh(mesh) instead").
-    mesh_cm = contextlib.nullcontext()
-    if self.mesh is not None:
-      import jax  # pylint: disable=g-import-not-at-top
-
-      mesh_cm = (
-          jax.set_mesh(self.mesh)
-          if hasattr(jax, "set_mesh")
-          else self.mesh
-      )
+    # Enter the Mesh object itself, exactly as rl_cluster's
+    # _get_mesh_and_logical_axis_rules_cm does via
+    # stack.enter_context(role_to_mesh[role]).
+    #
+    # NB: do NOT "modernise" this to jax.set_mesh(mesh) despite the deprecation
+    # warning jax 0.11 prints. The two are not interchangeable here: entering
+    # the Mesh installs the concrete physical mesh that the legacy check_pspec
+    # path uses when the model applies P('tp', None) inside jitted prefill,
+    # whereas jax.set_mesh installs only the abstract mesh for sharding-in-
+    # types. With jax.set_mesh the model still fails with
+    #   ValueError: Resource axis: tp of P('tp', None) is not found in mesh: ().
+    # Verified both ways against Qwen3-0.6B on a (fsdp=1, tp=8) mesh.
+    mesh_cm = self.mesh if self.mesh is not None else contextlib.nullcontext()
     with mesh_cm:
       sampler_output = self.sampler(
           input_strings=prompts,
