@@ -42,6 +42,11 @@ REWARD_MODE=${REWARD_MODE:-exact}
 # Traces dataset item -> rollout request -> rollout response -> DTO into
 # the orchestrator log. Off by default: one line per hop per rollout.
 TRACE_ROLLOUTS=${TRACE_ROLLOUTS:-0}
+# Root log level for every worker process. DEBUG surfaces the rollout path's
+# existing logging.debug calls, e.g. TrajectoryCollectEngine's
+# "model_call starting/done", which show the sampler actually being invoked.
+LOG_LEVEL=${LOG_LEVEL:-INFO}
+export TUNIX_LOG_LEVEL="$LOG_LEVEL"
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$((BATCH_SIZE * NUM_GENERATIONS))}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-1000000}
 LORA_RANK=${LORA_RANK:-16}
@@ -314,6 +319,7 @@ echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  reward mode:    $REWARD_MODE"
 echo "  trace rollouts: $TRACE_ROLLOUTS"
+echo "  log level:      $LOG_LEVEL"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
 echo "  sampler:        $SAMPLER"
