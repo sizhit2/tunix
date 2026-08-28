@@ -165,24 +165,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       default=os.getenv("WANDB_RUN_NAME", ""),
       help="W&B run name. Defaults to a timestamp-based name if unset.",
   )
-  parser.add_argument(
-      "--log_dir",
-      type=str,
-      default=os.getenv("LOG_DIR", "/tmp/trellis_gsm8k"),
-      help="Directory for local event logging (TensorBoard/CLU).",
-  )
-  parser.add_argument(
-      "--wandb_project",
-      type=str,
-      default=os.getenv("WANDB_PROJECT", "trellis-gsm8k"),
-      help="W&B project name.",
-  )
-  parser.add_argument(
-      "--wandb_run_name",
-      type=str,
-      default=os.getenv("WANDB_RUN_NAME", ""),
-      help="W&B run name. Defaults to timestamp-based name if unset.",
-  )
   parser.add_argument("--rpc_timeout_s", type=float, default=1800.0)
   parser.add_argument("--inference_addr", type=str, default="")
   parser.add_argument("--stop_workers_on_exit", action="store_true")
