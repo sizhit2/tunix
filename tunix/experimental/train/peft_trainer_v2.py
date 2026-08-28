@@ -150,25 +150,37 @@ def _weighted_metric_mean(values: Iterable[Any]) -> float:
   return numerator / denominator if denominator else 0.0
 
 
-def _metric_reducer(metric: Any) -> Callable[[Any], Any]:
+def _metric_reducer(metric: Any, name: str = "") -> Callable[[Any], Any]:
   """Selects the reduction that matches a buffered auxiliary metric.
 
   A WeightedMetric carries its own unreduced numerator and denominator, so the
   microbatches of a step must be combined as sum(num)/sum(denom); averaging the
   per-microbatch means would bias the result whenever the denominators differ
-  (e.g. unequal completion lengths). Plain scalars reduce with a mean.
+  (e.g. unequal completion lengths).
+
+  An extremum must be reduced with the same extremum, not a mean. Averaging
+  per-microbatch minima and maxima understates the step's true range, and at
+  train_micro_batch_size=1 it collapses entirely: each microbatch holds one
+  sequence, so its min and max are both that sequence's value, and the mean of
+  those is the step's *mean*. That is why "advantage/min" and "advantage/max"
+  both reported 0.0 on a step whose advantage/abs_mean was 0.87 -- GRPO
+  advantages are group-mean-zero by construction. Other plain scalars reduce
+  with a mean.
 
   Args:
     metric: One buffered auxiliary metric value.
+    name: The metric's name, used to detect extrema by "/min" and "/max".
 
   Returns:
     The callable used to reduce that metric's per-microbatch list.
   """
-  return (
-      _weighted_metric_mean
-      if isinstance(metric, _WEIGHTED_METRIC_TYPES)
-      else np.mean
-  )
+  if isinstance(metric, _WEIGHTED_METRIC_TYPES):
+    return _weighted_metric_mean
+  if name.endswith("/min"):
+    return np.min
+  if name.endswith("/max"):
+    return np.max
+  return np.mean
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -1084,7 +1096,7 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     additional_metrics = None
     if isinstance(aux, Mapping):
       additional_metrics = {
-          name: (metric, _metric_reducer(metric))
+          name: (metric, _metric_reducer(metric, name))
           for name, metric in aux.items()
       }
     self._buffered_train_metrics = self._buffer_metrics(
