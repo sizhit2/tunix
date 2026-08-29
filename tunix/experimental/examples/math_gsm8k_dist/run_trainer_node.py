@@ -72,7 +72,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
   parser.add_argument("--compute_logps_chunk_size", type=int, default=0)
   parser.add_argument("--eval_every_n_steps", type=int, default=1000000)
-  parser.add_argument("--learning_rate", type=float, default=2.0e-7)
+  parser.add_argument(
+      "--learning_rate",
+      type=float,
+      default=float(os.getenv("LEARNING_RATE", "2.0e-7")),
+      help="AdamW learning rate for the actor optimizer.",
+  )
   parser.add_argument("--use_lora", action="store_true")
   parser.add_argument("--lora_rank", type=int, default=64)
   parser.add_argument("--lora_alpha", type=float, default=64.0)

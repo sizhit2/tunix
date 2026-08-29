@@ -52,6 +52,9 @@ CHECKPOINT_ROOT_DIRECTORY=${CHECKPOINT_ROOT_DIRECTORY:-"${ARTIFACT_ROOT}/checkpo
 # Each Qwen3-0.6B step is ~2GB of params plus optimizer state, so the default
 # of 10 fills a small disk within a few steps.
 CHECKPOINT_MAX_TO_KEEP=${CHECKPOINT_MAX_TO_KEEP:-10}
+# Actor optimizer learning rate. Previously reachable only by editing
+# run_trainer_node.py, which defaulted it to 2e-7.
+LEARNING_RATE=${LEARNING_RATE:-2.0e-7}
 if [[ -z "${TOKENIZER_PATH:-}" ]]; then
   if [[ "$MODEL_SOURCE" == "maxtext" ]]; then
     TOKENIZER_PATH="$MODEL_ID"
@@ -443,6 +446,7 @@ echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train response: $TRAIN_MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  trace rollouts: $TRACE_ROLLOUTS"
+echo "  learning rate:  $LEARNING_RATE"
 echo "  wandb project:  $WANDB_PROJECT"
 echo "  log dir:        $LOG_DIR"
 echo "  log level:      $LOG_LEVEL"
@@ -516,6 +520,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --checkpoint_root_directory="$CHECKPOINT_ROOT_DIRECTORY"
     --checkpoint_max_to_keep="$CHECKPOINT_MAX_TO_KEEP"
+    --learning_rate="$LEARNING_RATE"
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
   )
