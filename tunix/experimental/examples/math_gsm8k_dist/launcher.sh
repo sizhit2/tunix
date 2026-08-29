@@ -49,6 +49,9 @@ MODEL_ID=${MODEL_ID:-$(default_model_id_from_name "$MODEL_NAME")}
 ARTIFACT_ROOT=${ARTIFACT_ROOT:-"${REPO_ROOT}/artifacts/qwen3_dist_gsm8k"}
 MODEL_DIR=${MODEL_DIR:-${MODEL_DOWNLOAD_DIR:-"${ARTIFACT_ROOT}/models"}}
 CHECKPOINT_ROOT_DIRECTORY=${CHECKPOINT_ROOT_DIRECTORY:-"${ARTIFACT_ROOT}/checkpoints"}
+# Each Qwen3-0.6B step is ~2GB of params plus optimizer state, so the default
+# of 10 fills a small disk within a few steps.
+CHECKPOINT_MAX_TO_KEEP=${CHECKPOINT_MAX_TO_KEEP:-10}
 if [[ -z "${TOKENIZER_PATH:-}" ]]; then
   if [[ "$MODEL_SOURCE" == "maxtext" ]]; then
     TOKENIZER_PATH="$MODEL_ID"
@@ -512,6 +515,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --compute_logps_micro_batch_size="$COMPUTE_LOGPS_MICRO_BATCH_SIZE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --checkpoint_root_directory="$CHECKPOINT_ROOT_DIRECTORY"
+    --checkpoint_max_to_keep="$CHECKPOINT_MAX_TO_KEEP"
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
   )
