@@ -21,6 +21,7 @@ import dataclasses
 import functools
 import inspect
 import operator
+import os
 from typing import Any, Optional, Tuple
 import warnings
 
@@ -240,6 +241,16 @@ class Sampler(base_sampler.BaseSampler):
     # and copying triggers massive memory overhead and OOMs. Donating the input
     # state allows the XLA compiler to reuse the memory buffer in-place,
     # completely avoiding allocation/copy overhead.
+    # RNG stream for calls that pass no seed. nnx.Rngs is stateful, so each
+    # call draws a fresh key instead of replaying PRNGKey(0). Seeded from
+    # SAMPLER_RNG_SEED when set so a run can be reproduced end to end.
+    _rng_seed_env = os.getenv("SAMPLER_RNG_SEED")
+    self._sampling_rngs = nnx.Rngs(
+        int(_rng_seed_env)
+        if _rng_seed_env is not None and _rng_seed_env.strip()
+        else int.from_bytes(os.urandom(4), "little")
+    )
+
     self._compiled_decode_fn = jax.jit(self._decode_fn, donate_argnums=(1,))
     self._compiled_prefill_fn = jax.jit(
         self._prefill_fn,
@@ -910,7 +921,15 @@ class Sampler(base_sampler.BaseSampler):
       )
 
     if seed is None:
-      seed = jax.random.PRNGKey(0)  # pyrefly: ignore[bad-assignment]
+      # Advance this Sampler's own RNG stream rather than reusing PRNGKey(0).
+      # JAX keys are values, so a fixed fallback key made every unseeded call
+      # replay the same stream: identical prompt -> byte-identical completion,
+      # forever. That silently collapses a GRPO group whose members are issued
+      # as separate sample() calls into one distinct completion, giving zero
+      # within-group reward variance and no gradient. torch-based samplers do
+      # not hit this because their global RNG advances on every draw.
+      # An explicit seed is still honoured, so seeded runs stay reproducible.
+      seed = self._sampling_rngs()
     elif isinstance(seed, int):
       seed = jax.random.PRNGKey(seed)  # pyrefly: ignore[bad-assignment]
     sampling_state = self.init_sample_state(
