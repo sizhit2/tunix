@@ -911,6 +911,22 @@ class WeightSyncCoordinator:
       )
 
     def fail(message: str) -> WeightSyncError:
+      # The round collects the specific reasons in `failures` -- which variable
+      # has no counterpart, which shape disagrees -- and WeightSyncError carries
+      # them structurally on .result. Nothing logs them, though, so a caller
+      # that prints only str(exc) sees "manifest preflight failed" with no
+      # indication of which variable is at fault. Log them here, once, at the
+      # point the round is declared dead.
+      if failures:
+        logging.error(
+            "Weight sync round %d (req_id %s) failed in state %s with %d"
+            " reason(s):\n  %s",
+            round_index,
+            req_id,
+            state.value,
+            len(failures),
+            "\n  ".join(str(f) for f in failures),
+        )
       return WeightSyncError(
           f"round {round_index} (req_id {req_id}, uuid {uuid}): {message};"
           f" final state {state.value}",

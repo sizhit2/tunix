@@ -169,6 +169,13 @@ def _create_rollout_mesh(args) -> Any:
   return mesh
 
 
+def _float32():
+  """jnp.float32, imported lazily to match this module's import style."""
+  import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
+
+  return jnp.float32
+
+
 def _create_vanilla_worker(args, tokenizer):
   """Creates a vanilla sampler rollout worker instance."""
   from tunix.experimental.rollout import (  # pylint: disable=g-import-not-at-top
@@ -200,6 +207,13 @@ def _create_vanilla_worker(args, tokenizer):
         # ("</reasoning-r-r-r-r-r..."). Disabled here only -- the trainer keeps
         # flash attention, whose sequence lengths are multiples of 256.
         use_flash_attention=False,
+        # Must match the trainer's dtype (run_trainer_node passes
+        # dtype=jnp.float32). Raiden pairs variables by name and compares
+        # item_size, so leaving this at create_model's bfloat16 default fails
+        # weight sync preflight on every tensor with
+        #   item_size differs: source 4, destination 2
+        # i.e. float32 trainer against a bfloat16 rollout.
+        dtype=_float32(),
     )
   raiden_delegate = (
       raiden_weight_sync_delegate.RaidenWeightSyncDelegate()
