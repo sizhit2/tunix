@@ -18,7 +18,7 @@ docker rm -f pr2023-verify >/dev/null 2>&1 || true
 # (2048, 6144)"), and collides with StepAlreadyExistsError on a same-model
 # rerun. The sibling data/ dir holds the downloaded GSM8K and is kept.
 sudo rm -rf "$HOME/tunix-pr1983/artifacts/qwen3_dist_gsm8k/checkpoints" /mnt/disk/gsm8k_checkpoints
-mkdir -p /mnt/disk/gsm8k_checkpoints
+sudo mkdir -p /mnt/disk/gsm8k_checkpoints
 
 echo -n "waiting for TPU HBM to be free"
 for _ in $(seq 1 30); do
