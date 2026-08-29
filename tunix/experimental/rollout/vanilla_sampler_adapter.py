@@ -16,6 +16,7 @@
 
 import abc
 import contextlib
+import os
 import numbers
 from typing import Any, List, Sequence
 from absl import logging
@@ -288,6 +289,15 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     top_p = top_ps[0] if top_ps else None
     top_k = top_ks[0] if top_ks else None
     seed = seeds[0] if seeds else None
+    if seed is None:
+      # sampler.py falls back to jax.random.PRNGKey(0) when no seed is given,
+      # so every call with the same prompt decodes identically. Diversity within
+      # a GRPO group then depends entirely on the group sharing one batched
+      # call, which the agentic path never does -- collector.py issues
+      # sample() once per request. Draw a fresh seed instead, which is what an
+      # unspecified seed should mean; an explicit seed is still honoured, so
+      # reproducible runs stay reproducible.
+      seed = int.from_bytes(os.urandom(4), "little")
     return_logprobs = any(return_logprobs_list) or kwargs.get(
         "return_logprobs", False
     )
