@@ -560,22 +560,55 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     try:
       state = self.sampler.transformer_state
       leaves = jax.tree.leaves(state)
-      for idx in (0, len(leaves) // 2):
-        if idx >= len(leaves):
-          continue
-        v = getattr(leaves[idx], "value", leaves[idx])
+      # Fingerprint EVERY leaf, not a sample: a transfer that updates only some
+      # tensors, or only part of one, is invisible if you spot-check two.
+      total = 0.0
+      absmax = 0.0
+      nonfinite = 0
+      per_leaf = []
+      for idx, leaf in enumerate(leaves):
+        v = getattr(leaf, "value", leaf)
         arr = jax.numpy.asarray(v, dtype=jax.numpy.float32)
-        logging.info(
-            "[weight-sync %s] leaf[%d] shape=%s mean=%.6g std=%.6g"
-            " absmax=%.6g finite=%s",
-            phase,
-            idx,
-            getattr(v, "shape", None),
-            float(jax.numpy.mean(arr)),
-            float(jax.numpy.std(arr)),
-            float(jax.numpy.max(jax.numpy.abs(arr))),
-            bool(jax.numpy.all(jax.numpy.isfinite(arr))),
+        # sum of |x| is order-sensitive enough to catch a permutation only
+        # weakly, so also carry a position-weighted sum, which is not.
+        s_abs = float(jax.numpy.sum(jax.numpy.abs(arr)))
+        w = float(
+            jax.numpy.sum(
+                arr.reshape(-1)
+                * jax.numpy.arange(arr.size, dtype=jax.numpy.float32)
+            )
         )
+        total += s_abs
+        absmax = max(absmax, float(jax.numpy.max(jax.numpy.abs(arr))))
+        if not bool(jax.numpy.all(jax.numpy.isfinite(arr))):
+          nonfinite += 1
+        per_leaf.append((idx, s_abs, w))
+      logging.info(
+          "[weight-sync %s] leaves=%d sum|w|=%.9g absmax=%.6g nonfinite=%d"
+          " weighted=%.9g",
+          phase,
+          len(leaves),
+          total,
+          absmax,
+          nonfinite,
+          sum(w for _, _, w in per_leaf),
+      )
+      self._last_fingerprint = getattr(self, "_last_fingerprint", None)
+      current = [(i, round(a, 6), round(w, 3)) for i, a, w in per_leaf]
+      if self._last_fingerprint is not None:
+        changed = [
+            i
+            for (i, a, w), (i2, a2, w2) in zip(current, self._last_fingerprint)
+            if a != a2 or w != w2
+        ]
+        logging.info(
+            "[weight-sync %s] leaves changed since previous phase: %d of %d%s",
+            phase,
+            len(changed),
+            len(current),
+            f" (first few: {changed[:8]})" if changed else "",
+        )
+      self._last_fingerprint = current
     except Exception as e:  # pylint: disable=broad-except
       logging.warning("[weight-sync %s] could not read param stats: %r", phase, e)
 

@@ -276,17 +276,33 @@ def _manifest_entries(
   entries: dict[str, dict[str, Any]] = {}
 
   def record(name, shape, item_size, layout=None, mesh_shape=None,
-             sharding_spec=None):
+             sharding_spec=None, mesh_axes=None):
     # layout (minor_to_major), mesh_shape and sharding_spec describe how the
     # bytes are ARRANGED. Raiden streams straight into bound buffers, so two
     # sides can agree on name, shape and item_size and still disagree on
     # ordering -- the transfer then commits while scrambling every tensor.
+    # An axis of size 1 shards nothing, and JAX normalises it out of a
+    # concrete sharding on one side while a declared spec may still name it.
+    # Comparing raw specs then reports a difference that does not exist
+    # physically -- e.g. source ('', 'tp') vs destination ('fsdp', 'tp') on a
+    # mesh with fsdp=1. Drop degenerate axes from both sides before comparing.
+    sizes = {}
+    if mesh_axes and mesh_shape and len(mesh_axes) == len(mesh_shape):
+      sizes = dict(zip(mesh_axes, mesh_shape))
+
+    def _normalise(spec):
+      if not spec:
+        return None
+      return tuple("" if sizes.get(a, 0) == 1 else a for a in spec)
+
     value = {
         "shape": shape,
         "item_size": item_size,
         "layout": tuple(layout) if layout else None,
-        "mesh_shape": tuple(mesh_shape) if mesh_shape else None,
-        "sharding_spec": tuple(sharding_spec) if sharding_spec else None,
+        "mesh_shape": (
+            tuple(d for d in mesh_shape if d != 1) if mesh_shape else None
+        ),
+        "sharding_spec": _normalise(sharding_spec),
     }
     if name in entries and entries[name] != value:
       problems.append(
@@ -305,6 +321,7 @@ def _manifest_entries(
             getattr(variable, "layout", None),
             getattr(variable, "mesh_shape", None),
             getattr(variable, "sharding_spec", None),
+            getattr(metadata, "mesh_axes", None),
         )
     else:
       record(
@@ -314,6 +331,7 @@ def _manifest_entries(
           getattr(metadata, "layout", None),
           getattr(metadata, "mesh_shape", None),
           None,
+          getattr(metadata, "mesh_axes", None),
       )
   return entries
 
