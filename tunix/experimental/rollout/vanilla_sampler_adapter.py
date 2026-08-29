@@ -17,6 +17,9 @@
 import abc
 import contextlib
 import os
+
+from flax import nnx
+import jax
 import numbers
 from typing import Any, List, Sequence
 from absl import logging
@@ -101,6 +104,29 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     # Mirrors the non-distributed path, which wraps its generate calls in
     # _get_mesh_and_logical_axis_rules_cm(Role.ROLLOUT).
     self.mesh = mesh if mesh is not None else _infer_mesh(transformer)
+
+    # Sampling RNG stream for requests that do not carry their own seed.
+    #
+    # torch keeps a stateful global RNG, so vLLM gets this for free: an
+    # unseeded request draws from the default generator, which advances on
+    # every draw (v1/sample/ops/topk_topp_sampler.py's random_sample calls
+    # q.exponential_() with no generator). JAX is functional -- a PRNGKey is a
+    # value, and sampler.py reuses PRNGKey(0) for every unseeded call, so each
+    # call replays the same stream and a GRPO group decodes identically.
+    #
+    # Hold the equivalent state here and split it per call. Seeded from
+    # ROLLOUT_RNG_SEED when set, so a run can be reproduced end to end;
+    # otherwise from OS entropy, so separate workers and restarts diverge.
+    # jax.random has no global stateful RNG -- keys are values, so there is
+    # nothing to advance implicitly. nnx.Rngs is the stateful equivalent in the
+    # ecosystem this repo already uses, and holds the state for us.
+    env_seed = os.getenv("ROLLOUT_RNG_SEED")
+    root_seed = (
+        int(env_seed)
+        if env_seed is not None and env_seed.strip()
+        else int.from_bytes(os.urandom(4), "little")
+    )
+    self._rngs = nnx.Rngs(root_seed)
     self.weight_sync_mode = getattr(
         config, "weight_sync_mode", weight_sync.WeightSyncMode.FALLBACK
     )
@@ -210,6 +236,14 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     del kwargs
     return True
 
+  def _next_seed(self) -> int:
+    """Advances the worker's sampling RNG and returns the next seed.
+
+    Calling the Rngs stream advances it, so consecutive requests draw from
+    fresh keys and a fixed ROLLOUT_RNG_SEED reproduces the whole sequence.
+    """
+    return int(jax.random.randint(self._rngs(), (), 0, 2**31 - 1))
+
   async def get_mesh(self, **kwargs) -> Any:
     """Returns the underlying device mesh topology."""
     del kwargs
@@ -290,14 +324,10 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     top_k = top_ks[0] if top_ks else None
     seed = seeds[0] if seeds else None
     if seed is None:
-      # sampler.py falls back to jax.random.PRNGKey(0) when no seed is given,
-      # so every call with the same prompt decodes identically. Diversity within
-      # a GRPO group then depends entirely on the group sharing one batched
-      # call, which the agentic path never does -- collector.py issues
-      # sample() once per request. Draw a fresh seed instead, which is what an
-      # unspecified seed should mean; an explicit seed is still honoured, so
-      # reproducible runs stay reproducible.
-      seed = int.from_bytes(os.urandom(4), "little")
+      # Advance the worker's stream, mirroring torch's global RNG. An explicit
+      # per-request seed is still honoured untouched, so seeded requests stay
+      # reproducible.
+      seed = self._next_seed()
     return_logprobs = any(return_logprobs_list) or kwargs.get(
         "return_logprobs", False
     )
