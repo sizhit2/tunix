@@ -482,6 +482,7 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
 
     # In Raiden mode, execute the pre-synchronization barrier via delegate.
     if self.enable_raiden:
+      self._log_param_stats("pre-sync")
       return await self.raiden_sync_delegate.pre_weight_sync(
           sync_request=sync_request, **kwargs
       )
@@ -527,6 +528,36 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
         )
       return True
 
+  def _log_param_stats(self, phase: str) -> None:
+    """Logs summary statistics of a few rollout parameters.
+
+    Raiden streams bytes straight into the bound buffers, so a transfer can
+    commit while writing the wrong layout. Name/shape/item_size preflight does
+    not catch that. Comparing these numbers either side of a round, and against
+    the trainer, shows whether the weights that landed are plausible.
+    """
+    try:
+      state = self.sampler.transformer_state
+      leaves = jax.tree.leaves(state)
+      for idx in (0, len(leaves) // 2):
+        if idx >= len(leaves):
+          continue
+        v = getattr(leaves[idx], "value", leaves[idx])
+        arr = jax.numpy.asarray(v, dtype=jax.numpy.float32)
+        logging.info(
+            "[weight-sync %s] leaf[%d] shape=%s mean=%.6g std=%.6g"
+            " absmax=%.6g finite=%s",
+            phase,
+            idx,
+            getattr(v, "shape", None),
+            float(jax.numpy.mean(arr)),
+            float(jax.numpy.std(arr)),
+            float(jax.numpy.max(jax.numpy.abs(arr))),
+            bool(jax.numpy.all(jax.numpy.isfinite(arr))),
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      logging.warning("[weight-sync %s] could not read param stats: %r", phase, e)
+
   async def post_weight_sync(
       self,
       sync_request: base_sampler_lib.WeightSyncRequest | Any = None,
@@ -536,9 +567,11 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
     # Raiden mode: Commit newly transferred weights and execute post-sync
     # barrier.
     if self.enable_raiden:
-      return await self.raiden_sync_delegate.post_weight_sync(
+      result = await self.raiden_sync_delegate.post_weight_sync(
           sync_request=sync_request, **kwargs
       )
+      self._log_param_stats("post-sync")
+      return result
     # Fallback mode: acts as a no-op returning True.
     return True
 

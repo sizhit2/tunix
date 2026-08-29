@@ -265,18 +265,29 @@ def _manifest_entries(
     metadata_list: Sequence[weight_sync.WorkUnitMetadata],
     side: str,
     problems: list[str],
-) -> dict[str, tuple[Optional[tuple[int, ...]], Optional[int]]]:
-  """variable name -> (global shape, item_size), across a side's units.
+) -> dict[str, dict[str, Any]]:
+  """variable name -> comparable manifest fields, across a side's units.
 
   Multi-tensor units contribute their variables manifest; single-tensor
   units contribute under their WorkUnitId.data_name. Units of one side share
   names (one per host); the shapes are GLOBAL, so every host must agree --
   a disagreement is recorded as a problem instead of being collapsed away.
   """
-  entries: dict[str, tuple[Optional[tuple[int, ...]], Optional[int]]] = {}
+  entries: dict[str, dict[str, Any]] = {}
 
-  def record(name, shape, item_size):
-    value = (shape, item_size)
+  def record(name, shape, item_size, layout=None, mesh_shape=None,
+             sharding_spec=None):
+    # layout (minor_to_major), mesh_shape and sharding_spec describe how the
+    # bytes are ARRANGED. Raiden streams straight into bound buffers, so two
+    # sides can agree on name, shape and item_size and still disagree on
+    # ordering -- the transfer then commits while scrambling every tensor.
+    value = {
+        "shape": shape,
+        "item_size": item_size,
+        "layout": tuple(layout) if layout else None,
+        "mesh_shape": tuple(mesh_shape) if mesh_shape else None,
+        "sharding_spec": tuple(sharding_spec) if sharding_spec else None,
+    }
     if name in entries and entries[name] != value:
       problems.append(
           f"preflight: {side} units disagree on {name!r}:"
@@ -287,12 +298,22 @@ def _manifest_entries(
   for metadata in metadata_list:
     if metadata.variables:
       for variable in metadata.variables:
-        record(variable.name, tuple(variable.shape), variable.item_size)
+        record(
+            variable.name,
+            tuple(variable.shape),
+            variable.item_size,
+            getattr(variable, "layout", None),
+            getattr(variable, "mesh_shape", None),
+            getattr(variable, "sharding_spec", None),
+        )
     else:
       record(
           metadata.unit.data_name,
           tuple(metadata.global_shape) if metadata.global_shape else None,
           metadata.item_size,
+          getattr(metadata, "layout", None),
+          getattr(metadata, "mesh_shape", None),
+          None,
       )
   return entries
 
@@ -319,19 +340,30 @@ def _manifest_mismatches(
     problems.append(
         f"preflight: destination variable {name!r} has no source counterpart"
     )
+  # shape/item_size decide whether the same NUMBER of bytes moves;
+  # layout/mesh_shape/sharding_spec decide whether they land in the same ORDER.
+  # A mismatch in the latter still transfers the right byte count, so the round
+  # commits green while every tensor arrives permuted.
+  labels = {
+      "shape": "global shape",
+      "item_size": "item_size",
+      "layout": "layout (minor_to_major)",
+      "mesh_shape": "mesh shape",
+      "sharding_spec": "sharding spec",
+  }
   for name in sorted(set(src) & set(dst)):
-    src_shape, src_item = src[name]
-    dst_shape, dst_item = dst[name]
-    if src_shape != dst_shape:
-      problems.append(
-          f"preflight: {name!r} global shape differs: source {src_shape},"
-          f" destination {dst_shape}"
-      )
-    if src_item != dst_item:
-      problems.append(
-          f"preflight: {name!r} item_size differs: source {src_item},"
-          f" destination {dst_item}"
-      )
+    for field, label in labels.items():
+      src_value = src[name].get(field)
+      dst_value = dst[name].get(field)
+      # Only compare when both sides reported the field: a handler that leaves
+      # placement metadata empty must not be failed for it.
+      if src_value is None or dst_value is None:
+        continue
+      if src_value != dst_value:
+        problems.append(
+            f"preflight: {name!r} {label} differs: source {src_value},"
+            f" destination {dst_value}"
+        )
   return problems
 
 
