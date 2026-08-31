@@ -39,6 +39,15 @@ class RolloutConfig(base_rollout.RolloutConfig):
     agent_name: Registered name of agent class in AGENT_REGISTRY.
     env_config: Configuration dictionary passed to environment constructor.
     agent_config: Configuration dictionary passed to agent constructor.
+
+  Note: the algo-level episode response budget (`max_response_length`) is
+  intentionally NOT a field here. It's owned by `AlgorithmAdapter` in the
+  orchestrator process and plumbed to workers per-request via
+  `RolloutRequest.generation_kwargs` (see `rl_program.py`'s
+  `rollout_dispatch_stage`), so there's a single source of truth instead of a
+  worker-local copy that recipes must keep in sync by hand.
+  `max_tokens_to_generate` remains here as the engine/TPU-level per-call
+  ceiling, which is a genuinely worker-local concern.
   """
 
   sampler_type: str = "vanilla"

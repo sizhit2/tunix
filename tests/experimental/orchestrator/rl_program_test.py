@@ -310,6 +310,7 @@ class RLProgramTest(absltest.TestCase):
           [{"prompt": "prompt_data_0", "prompt_id": "prompt_0"}],
           group_size=2,
           policy_version=0,
+          generation_args=datatypes.GenerationArgs(max_generation_steps=None),
       )
       self.mock_engine.train_step.assert_called_once()
       self.mock_engine.save_checkpoint.assert_called_once_with(
@@ -587,6 +588,7 @@ class RLProgramTest(absltest.TestCase):
           [dict_item],
           group_size=2,
           policy_version=0,
+          generation_args=datatypes.GenerationArgs(max_generation_steps=None),
       )
 
     asyncio.run(_run())

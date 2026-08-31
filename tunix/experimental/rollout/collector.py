@@ -42,7 +42,34 @@ class TrajectoryCollectorEngine:
       agent: Any,
       tokenizer: Any,
       chat_parser: Any,
+      max_response_length: int | None = None,
+      max_tokens_to_generate: int | None = None,
   ):
+    """Initializes the TrajectoryCollectorEngine.
+
+    `max_response_length` and `max_tokens_to_generate` are distinct knobs:
+    `max_response_length` is the algo-level total response/context token
+    budget for the whole episode (drives dynamic per-turn shrinking, single
+    call for single-turn); `max_tokens_to_generate` is the engine/TPU-level
+    static ceiling for any one sampler call. The two are reconciled per-call
+    as `min(remaining_max_response_length_budget, max_tokens_to_generate)` in
+    `run_episode`'s `model_call` — they only produce the same effective cap
+    for single-turn episodes if a caller sets them equal.
+
+    Args:
+      traj_id: Unique trajectory identifier.
+      request: The RolloutRequest driving this episode.
+      sampler: Sampler used for model generation calls.
+      env_client: Environment instance for this episode.
+      agent: Agent instance for this episode.
+      tokenizer: Tokenizer for prompt/response encoding.
+      chat_parser: Chat parser for conversation templating.
+      max_response_length: Worker-level default episode budget; overridden by
+        `request.generation_kwargs["max_response_length"]` (or the legacy
+        `"max_generation_steps"` key) when present.
+      max_tokens_to_generate: Worker-level default per-call ceiling;
+        overridden by `request.generation_kwargs["max_tokens"]` when present.
+    """
     if (
         sampler is None
         or env_client is None
@@ -65,6 +92,22 @@ class TrajectoryCollectorEngine:
     self.is_cancelled: bool = False
     self.is_done: bool = False
 
+    request_max_response_length = request.generation_kwargs.get(
+        "max_response_length",
+        request.generation_kwargs.get("max_generation_steps"),
+    )
+    self.max_response_length = (
+        request_max_response_length
+        if request_max_response_length is not None
+        else max_response_length
+    )
+    request_max_tokens_to_generate = request.generation_kwargs.get("max_tokens")
+    self.max_tokens_to_generate = (
+        request_max_tokens_to_generate
+        if request_max_tokens_to_generate is not None
+        else max_tokens_to_generate
+    )
+
   async def run_episode(self) -> trajectory_lib.Trajectory:
     """Executes multi-turn agentic rollout episode and returns standardized Trajectory."""
     # Note: model_call is an async coroutine callback invoked directly by
@@ -75,11 +118,30 @@ class TrajectoryCollectorEngine:
     ):
       del env, kwargs
       generation_kwargs = dict(self.request.generation_kwargs)
-      if max_generation_steps is not None:
-        generation_kwargs["max_tokens"] = max_generation_steps
+      # `max_generation_steps` is the remaining response-token budget for this
+      # turn, computed by TrajectoryCollectEngine as
+      # `max_response_length - tokens_so_far` (None if no `max_response_length`
+      # is configured, or before the inner engine tracks any budget). Fall
+      # back to the full episode budget when that's the case, then clamp
+      # against the engine/TPU-level `max_tokens_to_generate` ceiling — the
+      # two are independent knobs, reconciled per-call rather than assumed
+      # equal.
+      remaining_budget = (
+          max_generation_steps
+          if max_generation_steps is not None
+          else self.max_response_length
+      )
+      caps = [
+          v
+          for v in (remaining_budget, self.max_tokens_to_generate)
+          if v is not None
+      ]
+      generation_kwargs["max_tokens"] = (
+          min(caps) if caps else generation_kwargs.get("max_tokens", 64)
+      )
 
       sampling_params = sampler_lib.SamplingParams(
-          max_tokens=generation_kwargs.get("max_tokens", 64),
+          max_tokens=generation_kwargs["max_tokens"],
           temperature=generation_kwargs.get("temperature", 0.0),
           top_p=generation_kwargs.get("top_p", None),
           top_k=generation_kwargs.get("top_k", None),
@@ -123,6 +185,7 @@ class TrajectoryCollectorEngine:
         model_call=model_call,  # pyrefly: ignore[bad-argument-type]
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
+        max_response_length=self.max_response_length,
     )
     rl_traj = await inner_engine.collect(mode="Trajectory")
     self.is_done = True

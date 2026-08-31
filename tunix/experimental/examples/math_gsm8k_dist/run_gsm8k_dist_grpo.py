@@ -278,6 +278,9 @@ def _build_algo(args: argparse.Namespace) -> algorithm_adapter.GRPOAdapter:
       # StandardRLProgram consumes this many prompt groups per trainer update.
       mini_batch_size=args.batch_size,
       max_packed_len=args.max_prompt_length + args.max_response_length,
+      # Single source of truth for the episode response budget; plumbed to
+      # every dispatched RolloutRequest by rl_program.py.
+      max_response_length=args.max_response_length,
       clip_epsilon=args.epsilon,
       beta_kl=args.beta,
   )
@@ -371,7 +374,6 @@ def _build_prompt_item(
     *,
     example: dict[str, Any],
     prompt_idx: int,
-    max_response_length: int,
     temperature: float,
     top_p: float,
     top_k: int | None,
@@ -383,8 +385,10 @@ def _build_prompt_item(
   return {
       "prompt": prompt,
       "prompt_id": prompt_id,
+      # max_response_length is intentionally absent here: StandardRLProgram's
+      # rollout_dispatch_stage plumbs it from AlgorithmAdapter.max_response_length
+      # into every dispatched request, so this recipe doesn't set it per item.
       "generation_kwargs": {
-          "max_generation_steps": max_response_length,
           "temperature": temperature,
           "top_p": top_p,
           "top_k": top_k,
@@ -420,7 +424,6 @@ def _iter_prompt_items(
     yield _build_prompt_item(
         example=example,
         prompt_idx=prompt_idx,
-        max_response_length=args.max_response_length,
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=top_k,

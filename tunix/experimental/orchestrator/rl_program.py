@@ -186,6 +186,14 @@ class StandardRLProgram(RLProgram):
             [prompt_item],
             group_size=self.group_size,
             policy_version=self.policy_version,
+            # Plumbs the algo-level episode budget to every dispatched
+            # request; a prompt item's own `generation_kwargs` (if any) still
+            # takes precedence, see `DistributedRLEngine.dispatch_rollouts`.
+            generation_args=datatypes.GenerationArgs(
+                max_generation_steps=getattr(
+                    self.algo, "max_response_length", None
+                )
+            ),
         )
     finally:
       self._dispatch_done.set()

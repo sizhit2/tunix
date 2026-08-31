@@ -192,6 +192,14 @@ class RolloutManager:
         agent=agent,
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
+        # `max_response_length` (the algo-level episode budget) is NOT sourced
+        # from worker config: it arrives per-request via
+        # `request.generation_kwargs`, plumbed from `AlgorithmAdapter` by
+        # `StandardRLProgram.rollout_dispatch_stage`. `max_tokens_to_generate`
+        # is the engine/TPU-level static per-call ceiling and IS a worker-local
+        # concern, so it still comes from config here. The two are
+        # reconciled per-call inside the collector via min().
+        max_tokens_to_generate=getattr(self.config, "max_tokens_to_generate", None),
     )
 
     self._active_collectors[traj_id] = collector
