@@ -84,7 +84,12 @@ class RaidenWeightSyncDelegate:
       # awaited install, so completion is guaranteed before checksums/post.
       sync.h2d()
       if os.environ.get("VERIFY_WEIGHTS", "").lower() == "true":
-        logging.info("destination checksums: %s", sync.checksums())
+        logging.info(
+            "destination checksums: %s",
+            sync.checksums(
+                sample=int(os.environ.get("VERIFY_WEIGHTS_SAMPLE", "3"))
+            ),
+        )
     version = getattr(sync_request, "policy_version", 0)
     self._version = version if version else self._version + 1
     return self._version

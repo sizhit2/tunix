@@ -161,9 +161,30 @@ def create_default_handler(
   if backend_name == "raiden":
     from tunix.experimental.weight_sync import raiden_handler
 
-    handler = raiden_handler.RaidenHandler(
-        transfer_options=raiden_handler.make_host_staged_transfer_options()
+    # make_host_staged_transfer_options declares EVERY tensor untiled
+    # (skip_tiling all-False). Its own docstring scopes that to host-staged
+    # (CPU) sources, which "can only stage logical bytes". peft_trainer_v2
+    # host-stages ONLY under JAX_PLATFORMS=proxy; on a real TPU the source is
+    # device-resident and therefore TPU-tiled, so the all-False map makes the
+    # controller read a tiled buffer along the logical path. Let it derive
+    # skip_tiling from slice geometry unless the source really is host-staged.
+    host_staged = "proxy" in os.environ.get("JAX_PLATFORMS", "")
+    override = os.environ.get("RAIDEN_HOST_STAGED_TILING")
+    if override is not None:
+      host_staged = override.lower() in ("1", "true", "yes")
+    transfer_options = (
+        raiden_handler.make_host_staged_transfer_options()
+        if host_staged
+        else raiden_handler.RaidenTransferOptions(
+            parallelism=16, group_size=128
+        )
     )
+    logging.info(
+        "RaidenHandler transfer options: host_staged=%s skip_tiling=%s",
+        host_staged,
+        "all-False" if host_staged else "controller-derived",
+    )
+    handler = raiden_handler.RaidenHandler(transfer_options=transfer_options)
     logging.info("Built RaidenHandler natively; port %d", handler.port)
     return handler
   elif backend_name in ("noop", "no-op"):

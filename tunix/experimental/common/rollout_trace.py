@@ -166,10 +166,10 @@ def trace_trajectory_item(item: Any) -> None:
   traj = getattr(item, "traj", None)
   metadata = getattr(item, "metadata", None) or {}
   logging.info(
-      "[rollout-trace] DTO group_id=%s pair_index=%s status=%s pv=%s"
+      "[rollout-trace] DTO prompt_id=%s group_index=%s status=%s pv=%s"
       " reward=%s prompt_tokens=(%s) completion_tokens=(%s) steps=%d text=%s",
-      getattr(item, "group_id", None),
-      getattr(item, "pair_index", None),
+      getattr(item, "prompt_id", None),
+      getattr(item, "group_index", None),
       getattr(traj, "status", None),
       getattr(item, "policy_version", None),
       getattr(traj, "reward", None),

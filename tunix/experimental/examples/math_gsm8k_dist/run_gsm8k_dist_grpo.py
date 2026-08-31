@@ -311,9 +311,9 @@ def _log_rollout_samples(step: int) -> None:
   # were the same prompt's pair 0 and pair 1.
   for sample in samples:
     logging.info(
-        "[rollout sample] step=%d prompt=%s g=%d gold=%s extracted=%s"
-        " format_ok=%s answer_ok=%s reward=%.3f completion_tokens=%d"
-        " completion=%r",
+        "[rollout sample] step=%d prompt_id=%s group_index=%d gold=%s"
+        " extracted=%s format_ok=%s answer_ok=%s reward=%.3f"
+        " completion_tokens=%d completion=%r",
         step,
         sample["prompt_id"],
         sample["group_index"],

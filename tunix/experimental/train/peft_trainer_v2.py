@@ -1305,7 +1305,12 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
 
     worker.d2h()
     if os.environ.get("VERIFY_WEIGHTS", "").lower() == "true":
-      logging.info("source checksums: %s", worker.checksums())
+      logging.info(
+          "source checksums: %s",
+          worker.checksums(
+              sample=int(os.environ.get("VERIFY_WEIGHTS_SAMPLE", "3"))
+          ),
+      )
     return [worker.work_unit_metadata()]
 
   def release_weight_sync(self, sync_request: Any = None, **kwargs) -> Any:
