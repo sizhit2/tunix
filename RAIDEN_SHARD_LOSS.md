@@ -159,10 +159,20 @@ Knobs added this session for A/B-ing:
 - `RAIDEN_SKIP_BUFFER_LOCK` -- `0` enables the buffer lock
 - `VERIFY_WEIGHTS_SAMPLE` -- tensors per checksum dump (use 400 for all)
 
-**Do not call `get_host_buffer()` from inside a worker.** The trainer runs
-`host_stage=False` and has no host staging buffer; reading it segfaults the
-process and leaves it wedged in uninterruptible (`D`) state on the TPU driver,
-which survives SIGKILL and blocks all further runs until the driver times out.
+**Do not call `get_host_buffer()` from inside a worker.** It segfaulted the
+trainer, leaving it wedged in uninterruptible (`D`) state on the TPU driver,
+which survives SIGKILL and blocks all further runs until the driver times out
+on its own.
+
+The cause is *not* established. An earlier note here claimed the trainer "has
+no host staging buffer because `host_stage=False`" -- that is wrong.
+`host_stage` only controls whether JAX arrays are pulled to CPU before binding
+(`to_host_cpu_state`, a pathways-proxy workaround); the C++ WeightSynchronizer
+has a host buffer either way, since `d2h()` is defined as "Device-to-Host copy
+of current weights to Host buffer". Two untested candidates for the real cause:
+`d2h()` is asynchronous and the buffer was read mid-DMA, or the
+`layer_idx`/`shard_idx` ranges taken from `num_layers`/`num_shards` were out of
+range for a zero-copy accessor that does not bounds-check.
 
 ---
 
