@@ -39,13 +39,13 @@ Strong and repeated at `tp=2` (5 runs): only norm tensors are ever affected,
 loss ratios centre on 0.500. The generalisation to `tp=1` and `tp=4` rests on
 **a single run each** and should not be filed as reproduced until repeated.
 
-### RETRACTED - Tiling fix recovered 72% of weight mass (`02e09f3c`)
+### RETRACTED - Tiling fix recovered 72% of weight mass (`3d585a46`)
 
 Claimed `-72% -> -0.18%` from two runs 20 minutes apart. A controlled A/B on
 one binary gives `-0.12%` (old path) vs `-0.35%` (new path) -- no effect. The
 `-71.7%` outlier is not reproducible. The code change may still be more
-correct, but it does not fix what was claimed.
-**The commit message needs amending.**
+correct, but it does not fix what was claimed. The commit message has been
+amended to say so (was `02e09f3c` before the rewrite).
 
 ### RETRACTED - "This is a `tpu_sync` bug"
 
@@ -200,7 +200,6 @@ in 7 files.
 - **Repeat tp=4 and tp=1** two or three times each. Both are currently n=1, and
   the shard-granularity mechanism is only properly established at tp=2.
   Predicted ratios: 0.75/0.5/0.25 at tp=4; all-or-nothing at tp=1.
-- **Amend `02e09f3c`** so the repo stops carrying the -72% claim.
 - **Correct the memory notes** -- they record the shard-loss theory as refuted,
   which arm B reverses.
 - **Merge main** -- take its canonical form for the example files, re-apply the
