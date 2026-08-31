@@ -87,7 +87,23 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--mini_batch_size", type=int, default=2)
   parser.add_argument("--num_generations", type=int, default=8)
-  parser.add_argument("--max_steps", type=int, default=1)
+  parser.add_argument(
+      "--max_steps",
+      type=int,
+      default=1,
+      help=(
+          "Number of GRPO steps. Pass <= 0 to consume the whole TFDS "
+          "split: max_steps becomes num_epochs * len(dataset) // "
+          "batch_size, so every example is rolled out once per epoch "
+          "instead of the dataset being truncated."
+      ),
+  )
+  parser.add_argument(
+      "--num_epochs",
+      type=int,
+      default=1,
+      help="Passes over the split. Only used when --max_steps <= 0.",
+  )
   parser.add_argument("--max_prompt_length", type=int, default=1024)
   parser.add_argument("--max_response_length", type=int, default=1024)
   parser.add_argument(
@@ -195,8 +211,15 @@ def _as_text(value: Any) -> str:
   return normalized if isinstance(normalized, str) else str(normalized)
 
 
+_DATASET_CACHE: dict[tuple[Any, ...], grain.MapDataset] = {}
+
+
 def _build_gsm8k_dataset(args: argparse.Namespace) -> grain.MapDataset:
   """Loads the real GSM8K split and maps examples to prompt/answer records."""
+  cache_key = (args.tfds_split, args.tfds_data_dir, args.shuffle, args.seed)
+  cached = _DATASET_CACHE.get(cache_key)
+  if cached is not None:
+    return cached
   logging.info(
       "Loading GSM8K TFDS split=%s data_dir=%s shuffle=%s seed=%d.",
       args.tfds_split,
@@ -214,13 +237,15 @@ def _build_gsm8k_dataset(args: argparse.Namespace) -> grain.MapDataset:
   dataset = grain.MapDataset.source(data)
   if args.shuffle:
     dataset = dataset.shuffle(seed=args.seed)
-  return dataset.map(
+  dataset = dataset.map(
       lambda x: {
           "prompts": gsm8k.build_prompt(_as_text(x["question"])),
           "question": _as_text(x["question"]),
           "answer": gsm8k.extract_hash_answer(_as_text(x["answer"])),
       }
   )
+  _DATASET_CACHE[cache_key] = dataset
+  return dataset
 
 
 # Rollout samples scored during the current step, drained by
@@ -472,6 +497,41 @@ def _build_prompt_item(
   }
 
 
+def _resolve_max_steps(args: argparse.Namespace) -> int:
+  """Expands a non-positive --max_steps into a full pass over the split.
+
+  `_iter_prompt_items` yields exactly `max_steps * batch_size` prompts and
+  wraps with `% dataset_size`, so a small max_steps silently truncates the
+  split to its first few examples. Sizing max_steps from the dataset makes
+  the run cover every example once per epoch.
+  """
+  if args.max_steps > 0:
+    return args.max_steps
+  dataset_size = len(_build_gsm8k_dataset(args))
+  if dataset_size == 0:
+    raise ValueError("GSM8K dataset is empty.")
+  steps_per_epoch = dataset_size // args.batch_size
+  if steps_per_epoch == 0:
+    raise ValueError(
+        f"batch_size={args.batch_size} exceeds dataset size {dataset_size};"
+        " pass an explicit --max_steps."
+    )
+  resolved = steps_per_epoch * max(1, args.num_epochs)
+  logging.info(
+      "Resolved --max_steps=%d to %d (%d example(s) / batch_size %d ="
+      " %d step(s) per epoch x %d epoch(s)); dropping %d trailing example(s)"
+      " per epoch.",
+      args.max_steps,
+      resolved,
+      dataset_size,
+      args.batch_size,
+      steps_per_epoch,
+      max(1, args.num_epochs),
+      dataset_size % args.batch_size,
+  )
+  return resolved
+
+
 def _iter_prompt_items(
     args: argparse.Namespace,
 ) -> Iterator[dict[str, Any]]:
@@ -523,6 +583,9 @@ def main(argv: list[str], context: Any = None) -> None:
     raise ValueError("train_micro_batch_size must be positive.")
   if args.train_max_response_length <= 0:
     args.train_max_response_length = args.max_response_length
+  # Resolve before wandb sees `vars(args)` so the logged config carries the
+  # step count the run actually uses, not the sentinel.
+  args.max_steps = _resolve_max_steps(args)
   if args.train_max_response_length < args.max_response_length:
     raise ValueError(
         "train_max_response_length must be >= max_response_length so generated "

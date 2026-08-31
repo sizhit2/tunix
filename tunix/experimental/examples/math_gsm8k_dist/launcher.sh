@@ -52,6 +52,10 @@ CHECKPOINT_ROOT_DIRECTORY=${CHECKPOINT_ROOT_DIRECTORY:-"${ARTIFACT_ROOT}/checkpo
 # Each Qwen3-0.6B step is ~2GB of params plus optimizer state, so the default
 # of 10 fills a small disk within a few steps.
 CHECKPOINT_MAX_TO_KEEP=${CHECKPOINT_MAX_TO_KEEP:-10}
+# run_trainer_node defaults this to 1 -- a checkpoint EVERY step. At ~7GB per
+# step for Qwen3-0.6B (params + Adam state) that dominates step time and can
+# outrun the disk during rotation on a long run.
+CHECKPOINT_SAVE_INTERVAL_STEPS=${CHECKPOINT_SAVE_INTERVAL_STEPS:-1}
 # Actor optimizer learning rate. Previously reachable only by editing
 # run_trainer_node.py, which defaulted it to 2e-7.
 LEARNING_RATE=${LEARNING_RATE:-2.0e-7}
@@ -67,7 +71,10 @@ MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-1024}
 TRAIN_MAX_RESPONSE_LENGTH=${TRAIN_MAX_RESPONSE_LENGTH:-}
 BATCH_SIZE=${BATCH_SIZE:-4}
 NUM_GENERATIONS=${NUM_GENERATIONS:-8}
+# MAX_STEPS<=0 means "one full pass over the split": the orchestrator sizes it
+# as NUM_EPOCHS * len(dataset) / BATCH_SIZE.
 MAX_STEPS=${MAX_STEPS:-1}
+NUM_EPOCHS=${NUM_EPOCHS:-1}
 TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
 COMPUTE_LOGPS_MICRO_BATCH_SIZE=${COMPUTE_LOGPS_MICRO_BATCH_SIZE:-1}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-2}
@@ -431,7 +438,11 @@ echo "  python:         $PYTHON_BIN"
 echo "  trajectories:   $((BATCH_SIZE * NUM_GENERATIONS)) per step"
 echo "  batch size:     $BATCH_SIZE"
 echo "  generations:    $NUM_GENERATIONS"
-echo "  max steps:      $MAX_STEPS"
+if (( MAX_STEPS <= 0 )); then
+  echo "  max steps:      full dataset ($NUM_EPOCHS epoch(s))"
+else
+  echo "  max steps:      $MAX_STEPS"
+fi
 echo "  eval interval:  $EVAL_EVERY_N_STEPS"
 echo "  beta:           $BETA"
 echo "  epsilon:        $EPSILON"
@@ -520,6 +531,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --checkpoint_root_directory="$CHECKPOINT_ROOT_DIRECTORY"
     --checkpoint_max_to_keep="$CHECKPOINT_MAX_TO_KEEP"
+    --checkpoint_save_interval_steps="$CHECKPOINT_SAVE_INTERVAL_STEPS"
     --learning_rate="$LEARNING_RATE"
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
@@ -758,6 +770,7 @@ echo "Launching CPU orchestrator..."
     --mini_batch_size="$MINI_BATCH_SIZE"
     --num_generations="$NUM_GENERATIONS"
     --max_steps="$MAX_STEPS"
+    --num_epochs="$NUM_EPOCHS"
     --max_prompt_length="$MAX_PROMPT_LENGTH"
     --max_response_length="$MAX_RESPONSE_LENGTH"
     --train_max_response_length="$TRAIN_MAX_RESPONSE_LENGTH"
