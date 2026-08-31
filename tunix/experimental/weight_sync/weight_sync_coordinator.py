@@ -276,7 +276,7 @@ def _manifest_entries(
   entries: dict[str, dict[str, Any]] = {}
 
   def record(name, shape, item_size, layout=None, mesh_shape=None,
-             sharding_spec=None, mesh_axes=None):
+             sharding_spec=None, mesh_axes=None, unit_mesh_shape=None):
     # layout (minor_to_major), mesh_shape and sharding_spec describe how the
     # bytes are ARRANGED. Raiden streams straight into bound buffers, so two
     # sides can agree on name, shape and item_size and still disagree on
@@ -286,9 +286,20 @@ def _manifest_entries(
     # Comparing raw specs then reports a difference that does not exist
     # physically -- e.g. source ('', 'tp') vs destination ('fsdp', 'tp') on a
     # mesh with fsdp=1. Drop degenerate axes from both sides before comparing.
+    # `mesh_axes` is UNIT-level metadata naming the physical device mesh, so
+    # the unit's own mesh_shape is its partner. A variable's `mesh_shape` is
+    # a shard grid indexed by TENSOR rank -- `TensorMetadata.__post_init__`
+    # requires `len(mesh_shape) == len(shape)` -- so zipping it with axis
+    # names pairs "fsdp" with a tensor dimension. For a rank != len(mesh_axes)
+    # tensor that silently skips normalisation; for a rank == len(mesh_axes)
+    # one it silently mislabels the sizes. Take the first candidate whose
+    # length matches, unit first. The single-tensor path has no per-tensor
+    # metadata and passes the unit mesh as `mesh_shape`, so it still resolves.
     sizes = {}
-    if mesh_axes and mesh_shape and len(mesh_axes) == len(mesh_shape):
-      sizes = dict(zip(mesh_axes, mesh_shape))
+    for axis_sizes in (unit_mesh_shape, mesh_shape):
+      if mesh_axes and axis_sizes and len(mesh_axes) == len(axis_sizes):
+        sizes = dict(zip(mesh_axes, axis_sizes))
+        break
 
     def _normalise(spec):
       if not spec:
@@ -322,6 +333,7 @@ def _manifest_entries(
             getattr(variable, "mesh_shape", None),
             getattr(variable, "sharding_spec", None),
             getattr(metadata, "mesh_axes", None),
+            getattr(metadata, "mesh_shape", None),
         )
     else:
       record(
@@ -336,18 +348,35 @@ def _manifest_entries(
   return entries
 
 
+# Fields describing WHERE bytes live rather than HOW MANY there are. Raiden's
+# controller plans a reshard between the registered source and destination
+# layouts (see raiden_handler's module docstring), and its own
+# `_validate_metadata` checks each side for INTERNAL consistency only -- it
+# never compares one side's spec against the other's. Two sides are therefore
+# allowed to disagree here, so a disagreement is reported, not enforced.
+_PLACEMENT_FIELDS = ("layout", "mesh_shape", "sharding_spec")
+
+
 def _manifest_mismatches(
     src_metadata: Sequence[weight_sync.WorkUnitMetadata],
     dst_metadata: Sequence[weight_sync.WorkUnitMetadata],
-) -> list[str]:
-  """Name/shape/item_size preflight across the two sides.
+) -> tuple[list[str], list[str]]:
+  """Preflight across the two sides, split by whether it must stop the round.
 
   The controller pairs variables by EXACT name and silently skips
   mismatches -- a typo'd wire name loses a tensor while the round still
   reports success. This check runs before any destination is quiesced, so
   a mismatch costs nothing but the round attempt.
+
+  Returns:
+    (blocking, advisory). `blocking` covers name, global shape and item_size:
+    the transport cannot reconcile these, and a mismatch means bytes are lost
+    or truncated. `advisory` covers `_PLACEMENT_FIELDS`, which the controller
+    is expected to reshard; those are surfaced for diagnosis without failing
+    the round.
   """
   problems: list[str] = []
+  advisory: list[str] = []
   src = _manifest_entries(src_metadata, "source", problems)
   dst = _manifest_entries(dst_metadata, "destination", problems)
   for name in sorted(set(src) - set(dst)):
@@ -378,11 +407,12 @@ def _manifest_mismatches(
       if src_value is None or dst_value is None:
         continue
       if src_value != dst_value:
-        problems.append(
+        sink = advisory if field in _PLACEMENT_FIELDS else problems
+        sink.append(
             f"preflight: {name!r} {label} differs: source {src_value},"
             f" destination {dst_value}"
         )
-  return problems
+  return problems, advisory
 
 
 def _worker_id(member: object) -> str:
@@ -1061,7 +1091,23 @@ class WeightSyncCoordinator:
       # the controller pairs variables by exact name and silently skips
       # mismatches, so a bad wire name or shape must stop the round HERE --
       # afterwards it degrades into a lost tensor under a green round.
-      preflight_problems = _manifest_mismatches(src_metadata, dst_metadata)
+      preflight_problems, preflight_advisories = _manifest_mismatches(
+          src_metadata, dst_metadata
+      )
+      # Placement disagreements are the controller's job to reshard, so they
+      # are logged and carried on the round report rather than raised. They
+      # stay visible because a permuted-but-committed transfer is exactly the
+      # failure mode that looks green from the orchestrator.
+      if preflight_advisories:
+        logging.warning(
+            "Weight sync round %d (req_id %s): %d placement difference(s)"
+            " between source and destination; the controller is expected to"
+            " reshard these:\n  %s",
+            round_index,
+            req_id,
+            len(preflight_advisories),
+            "\n  ".join(preflight_advisories[:20]),
+        )
       if preflight_problems:
         failures.extend(preflight_problems)
         raise fail(

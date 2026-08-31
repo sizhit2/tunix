@@ -150,6 +150,7 @@ class FakeDestination:
       variables: Sequence[weight_sync.TensorMetadata] = (),
       global_shape: tuple[int, ...] = (4,),
       item_size: int = 4,
+      layout: tuple[int, ...] = (0,),
       fail_persistently: bool = False,
       pre_gate: Optional[asyncio.Event] = None,
       pre_await: Optional[asyncio.Event] = None,
@@ -167,6 +168,7 @@ class FakeDestination:
     self._variables = tuple(variables)
     self._global_shape = global_shape
     self._item_size = item_size
+    self._layout = layout
     self._fail_on = fail_on
     self._fail_persistently = fail_persistently
     self._failed_once: set[str] = set()
@@ -256,7 +258,7 @@ class FakeDestination:
             control_plane_rpc_address=f"10.0.0.2:{self.port + 500}",
             global_shape=self._global_shape,
             mesh_shape=(1,),
-            layout=(0,),
+            layout=self._layout,
             item_size=self._item_size,
         )
     ]
@@ -664,6 +666,126 @@ class ManifestPreflightTest(CoordinatorTestBase):
     self.assertNotIn("pre", self.phases("sampler"))
     # Source staging is still released on this exit path.
     self.assertEqual(self.sources[0].release_calls, 1)
+
+
+class ManifestPlacementTest(CoordinatorTestBase):
+  """Placement metadata is ADVISORY, not blocking.
+
+  Raiden's controller plans a reshard between the registered source and
+  destination layouts, so the two sides are allowed to disagree on where
+  bytes live. Only disagreements the transport cannot reconcile -- name,
+  global shape, item_size -- may stop a round.
+  """
+
+  def _unit(self, job_name, **kwargs):
+    return weight_sync.WorkUnitMetadata(
+        unit=WorkUnitId(job_name=job_name, job_replica_id="0"),
+        **kwargs,
+    )
+
+  def _tensor(self, **kwargs):
+    # TensorMetadata requires mesh_shape to have TENSOR rank -- that is the
+    # whole reason it cannot be zipped with the unit's `mesh_axes`.
+    fields = dict(
+        name="w", shape=(4, 8, 8), mesh_shape=(1, 2, 1), layout=(2, 1, 0),
+        item_size=4,
+    )
+    fields.update(kwargs)
+    return weight_sync.TensorMetadata(**fields)
+
+  def test_size_one_mesh_axis_is_not_a_difference(self):
+    # The production case: fsdp=1, tp=2 on BOTH sides. JAX normalises the
+    # size-1 axis out of the trainer's concrete sharding while the rollout's
+    # declared spec still names it. The placements are identical, so this
+    # must produce neither a failure nor an advisory.
+    axes = ("fsdp", "tp")
+    src = [self._unit(
+        "trainer", mesh_axes=axes, mesh_shape=(1, 2),
+        variables=(self._tensor(sharding_spec=("", "tp", "")),),
+    )]
+    dst = [self._unit(
+        "sampler", mesh_axes=axes, mesh_shape=(1, 2),
+        variables=(self._tensor(sharding_spec=("fsdp", "tp", "")),),
+    )]
+
+    blocking, advisory = weight_sync_coordinator._manifest_mismatches(src, dst)
+
+    self.assertEmpty(blocking)
+    self.assertEmpty(advisory)
+
+  def test_unit_mesh_shape_wins_over_the_per_tensor_shard_grid(self):
+    # The dangerous case for axis pairing: a rank-2 tensor whose shard grid
+    # is (2, 1) under a unit mesh of fsdp=1, tp=2. Both have length 2, so a
+    # length check alone cannot tell them apart -- zipping the per-tensor
+    # grid with the axis NAMES yields fsdp=2, tp=1 and normalises exactly the
+    # wrong axis away, leaving these two identical placements reported as a
+    # difference. Only the unit mesh pairs with `mesh_axes`.
+    axes = ("fsdp", "tp")
+    tensor = dict(shape=(8, 8), mesh_shape=(2, 1), layout=(1, 0))
+    src = [self._unit(
+        "trainer", mesh_axes=axes, mesh_shape=(1, 2),
+        variables=(self._tensor(sharding_spec=("", "tp"), **tensor),),
+    )]
+    dst = [self._unit(
+        "sampler", mesh_axes=axes, mesh_shape=(1, 2),
+        variables=(self._tensor(sharding_spec=("fsdp", "tp"), **tensor),),
+    )]
+
+    blocking, advisory = weight_sync_coordinator._manifest_mismatches(src, dst)
+
+    self.assertEmpty(blocking)
+    self.assertEmpty(advisory)
+
+  def test_real_placement_difference_is_advisory_not_blocking(self):
+    # tp=2 on both sides, so neither axis is degenerate: the specs really do
+    # place bytes differently. That is the controller's reshard to plan, so
+    # it is reported without failing the round.
+    axes = ("fsdp", "tp")
+    src = [self._unit(
+        "trainer", mesh_axes=axes, mesh_shape=(2, 2),
+        variables=(self._tensor(sharding_spec=("", "tp", "")),),
+    )]
+    dst = [self._unit(
+        "sampler", mesh_axes=axes, mesh_shape=(2, 2),
+        variables=(self._tensor(sharding_spec=("fsdp", "tp", "")),),
+    )]
+
+    blocking, advisory = weight_sync_coordinator._manifest_mismatches(src, dst)
+
+    self.assertEmpty(blocking)
+    self.assertLen(advisory, 1)
+    self.assertIn("sharding spec", advisory[0])
+
+  def test_layout_difference_is_advisory_and_shape_still_blocks(self):
+    # Both kinds present at once: the split must route each to its own list
+    # rather than collapsing the pair into whichever it saw first.
+    src = [self._unit(
+        "trainer",
+        variables=(self._tensor(layout=(2, 1, 0)),),
+    )]
+    dst = [self._unit(
+        "sampler",
+        variables=(self._tensor(layout=(0, 1, 2), shape=(4, 8, 16)),),
+    )]
+
+    blocking, advisory = weight_sync_coordinator._manifest_mismatches(src, dst)
+
+    self.assertLen(blocking, 1)
+    self.assertIn("global shape", blocking[0])
+    self.assertLen(advisory, 1)
+    self.assertIn("layout", advisory[0])
+
+  def test_placement_only_difference_lets_the_round_commit(self):
+    # End to end: before the split this raised out of preflight without ever
+    # quiescing the destination. It must now run the full round.
+    dest = FakeDestination("sampler", [], layout=(1, 0))
+    self.make(dest)  # source's layout is (0,)
+
+    result = self.sync()
+
+    self.assertIs(result.state, RoundState.COMMITTED)
+    self.assertIn("sync", self.phases("sampler"))
+    self.assertEqual(dest.serving, [1000.0, 1001.0, 1002.0, 1003.0])
 
 
 class FailurePathTest(CoordinatorTestBase):
