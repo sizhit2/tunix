@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import collections
+import os
 import socket
 from typing import Any, List, Optional, Tuple
 
@@ -201,7 +202,15 @@ class RaidenSynchronizer:
           parallelism=self._parallelism,
           # Rebinding deadlocks on the retained usage holds otherwise; the
           # caller keeps Python references to the bound arrays regardless.
-          unsafe_skip_buffer_lock=True,
+          # But h2d() is asynchronous and the rollout binds with auto_h2d=True,
+          # so chunks install concurrently with JAX holding live references to
+          # these same buffers. With the lock skipped that races, and a
+          # nondeterministic subset of tensors ends up never written. Settable
+          # so the trade can be measured rather than assumed.
+          unsafe_skip_buffer_lock=(
+              os.environ.get("RAIDEN_SKIP_BUFFER_LOCK", "1").lower()
+              not in ("0", "false", "no")
+          ),
           listener_port=0,
           bind_ip=None,
           auto_h2d=self._auto_h2d,
