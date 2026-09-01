@@ -623,6 +623,71 @@ class SamplerTest(parameterized.TestCase):
         result.tokens, [np.array([14]), np.array([12, 1, 17])]
     )
 
+  def _rng_sampler(self, sampling_rng_seed=0):
+    vocab = tc.MockVocab()
+    transformer = tc.ToyTransformer(
+        config=tc.ModelConfig(vocab_size=vocab.GetPieceSize()),
+        rngs=nnx.Rngs(42),
+    )
+    return sampler_lib.Sampler(
+        transformer=transformer,
+        tokenizer=vocab,
+        cache_config=sampler_lib.CacheConfig(
+            cache_size=64,
+            num_layers=4,
+            num_kv_heads=4,
+            head_dim=16,
+        ),
+        sampling_rng_seed=sampling_rng_seed,
+    )
+
+  def _gen(self, sampler, seed=None):
+    return sampler(
+        ['input string'],
+        max_generation_steps=8,
+        max_prompt_length=8,
+        temperature=1.0,
+        top_p=1.0,
+        seed=seed,
+    ).text[0]
+
+  def test_unseeded_calls_advance_the_stream(self):
+    """The fix: repeated unseeded calls must not replay one stream.
+
+    A GRPO group is issued as separate batch-size-1 sample() calls, so a fixed
+    fallback key would make every member decode identically.
+    """
+    sampler = self._rng_sampler()
+    self.assertLen({self._gen(sampler) for _ in range(4)}, 4)
+
+  def test_fixed_seed_collapses_the_group(self):
+    """Control for the above: a pinned seed is what the old code did."""
+    sampler = self._rng_sampler()
+    self.assertLen({self._gen(sampler, seed=0) for _ in range(4)}, 1)
+
+  def test_sampling_rng_seed_makes_a_run_reproducible(self):
+    """The stream starts from a fixed point, so a run replays exactly."""
+    a = [self._gen(self._rng_sampler(sampling_rng_seed=7)) for _ in range(3)]
+    b = [self._gen(self._rng_sampler(sampling_rng_seed=7)) for _ in range(3)]
+    self.assertEqual(a, b)
+    # A fresh Sampler replays from the start, so all three match here.
+    self.assertLen(set(a), 1)
+    # One Sampler drawing three times advances instead.
+    one = self._rng_sampler(sampling_rng_seed=7)
+    self.assertLen({self._gen(one) for _ in range(3)}, 3)
+
+  def test_different_sampling_rng_seeds_diverge(self):
+    self.assertNotEqual(
+        self._gen(self._rng_sampler(sampling_rng_seed=7)),
+        self._gen(self._rng_sampler(sampling_rng_seed=8)),
+    )
+
+  def test_default_is_deterministic_not_entropy_seeded(self):
+    """Two default Samplers must agree; the default is a fixed seed."""
+    self.assertEqual(
+        self._gen(self._rng_sampler()), self._gen(self._rng_sampler())
+    )
+
   def test_forbidden_token_ids(self):
     vocab = tc.MockVocab()
     transformer = tc.ToyTransformer(

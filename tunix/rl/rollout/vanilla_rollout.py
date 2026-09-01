@@ -33,11 +33,13 @@ class VanillaRollout(base_rollout.BaseRollout):
       model: nnx.Module,
       tokenizer: Any,
       cache_config_or_size: base_rollout.CacheConfig,
+      sampling_rng_seed: int = 0,
   ):
     self._sampler = sampler.Sampler(
         model,
         tokenizer,
         sampler.CacheConfig(**dataclasses.asdict(cache_config_or_size)),
+        sampling_rng_seed=sampling_rng_seed,
     )
 
   def generate(

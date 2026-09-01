@@ -21,7 +21,6 @@ import dataclasses
 import functools
 import inspect
 import operator
-import os
 from typing import Any, Optional, Tuple
 import warnings
 
@@ -209,6 +208,7 @@ class Sampler(base_sampler.BaseSampler):
       tokenizer: Any,
       cache_config: CacheConfig,
       image_processor: image_processor.ImageProcessor | None = None,
+      sampling_rng_seed: int = 0,
   ):
     """Initializes the sampler.
 
@@ -217,6 +217,11 @@ class Sampler(base_sampler.BaseSampler):
       tokenizer: a tokenizer for the given model.
       cache_config: configuration for the KV cache.
       image_processor: The image processor.
+      sampling_rng_seed: seeds the RNG stream that calls passing no explicit
+        seed draw from. Deterministic by default so a run can be replayed;
+        callers that need two Samplers in one job to diverge should pass
+        different values. Distinct from `rng_seed` elsewhere in the repo, which
+        seeds model *initialisation* (see automodel.py).
     """
     self.tokenizer = tokenizer
     if not isinstance(tokenizer, tok_adapter.TokenizerAdapter):
@@ -242,14 +247,11 @@ class Sampler(base_sampler.BaseSampler):
     # state allows the XLA compiler to reuse the memory buffer in-place,
     # completely avoiding allocation/copy overhead.
     # RNG stream for calls that pass no seed. nnx.Rngs is stateful, so each
-    # call draws a fresh key instead of replaying PRNGKey(0). Seeded from
-    # SAMPLER_RNG_SEED when set so a run can be reproduced end to end.
-    _rng_seed_env = os.getenv("SAMPLER_RNG_SEED")
-    self._sampling_rngs = nnx.Rngs(
-        int(_rng_seed_env)
-        if _rng_seed_env is not None and _rng_seed_env.strip()
-        else int.from_bytes(os.urandom(4), "little")
-    )
+    # call draws a fresh key instead of replaying PRNGKey(0), which is what
+    # made every unseeded call decode identically. The starting point is a
+    # fixed seed rather than OS entropy: the stream advancing is what separates
+    # successive calls, so entropy buys nothing here and costs reproducibility.
+    self._sampling_rngs = nnx.Rngs(sampling_rng_seed)
 
     self._compiled_decode_fn = jax.jit(self._decode_fn, donate_argnums=(1,))
     self._compiled_prefill_fn = jax.jit(

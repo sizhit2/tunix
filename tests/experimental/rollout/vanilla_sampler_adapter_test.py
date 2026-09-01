@@ -109,6 +109,48 @@ class VanillaSamplerAdapterTest(absltest.TestCase):
     self.assertGreater(responses[0].prompt_token_ids.size, 0)
     self.assertGreater(responses[1].prompt_token_ids.size, 0)
 
+  def _req(self, request_id, prompt="input string", seed=None):
+    return base_sampler_lib.SamplingRequest(
+        request_id=request_id,
+        prompt=prompt,
+        sampling_params=base_sampler_lib.SamplingParams(
+            max_tokens=8, temperature=1.0, top_p=1.0, seed=seed
+        ),
+    )
+
+  def test_unseeded_group_members_decode_differently(self):
+    """A GRPO group is issued as separate calls; they must not all match."""
+    texts = [
+        asyncio.run(self.vanilla_sampler.sample([self._req(f"r{i}")]))[0].text
+        for i in range(4)
+    ]
+    self.assertLen(set(texts), 4)
+
+  def test_seeded_request_is_reproducible_across_calls(self):
+    first = asyncio.run(self.vanilla_sampler.sample([self._req("a", seed=11)]))
+    second = asyncio.run(self.vanilla_sampler.sample([self._req("b", seed=11)]))
+    self.assertEqual(first[0].text, second[0].text)
+
+  def test_rng_seed_reaches_the_underlying_sampler(self):
+    """sampling_rng_seed must reach the Sampler, not be silently dropped."""
+
+    def build(sampling_rng_seed):
+      adapter = vanilla_sampler_adapter.VanillaSamplerAdapter(
+          server_id="tpu_slice_seeded",
+          transformer=self.transformer,
+          tokenizer=self.vocab,
+          cache_config=self.cache_config,
+          sampling_rng_seed=sampling_rng_seed,
+      )
+      adapter.initialize()
+      return adapter
+
+    first = asyncio.run(build(5).sample([self._req("a")]))[0].text
+    second = asyncio.run(build(5).sample([self._req("b")]))[0].text
+    self.assertEqual(first, second)
+    other = asyncio.run(build(6).sample([self._req("c")]))[0].text
+    self.assertNotEqual(first, other)
+
   def test_construct_with_integer_cache_size(self):
     sampler_adapter_direct = vanilla_sampler_adapter.VanillaSamplerAdapter(
         server_id="tpu_slice_02",
