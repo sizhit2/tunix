@@ -962,6 +962,33 @@ class RLProgramTest(absltest.TestCase):
       self.assertTrue(logger.metric_exists("", "rewards/sum", "train"))
       self.assertAlmostEqual(logger.get_metric("", "rewards/sum", "train"), 5.0)
 
+      # 2b. Advantage Metrics (from the RLTrainerPayloads algo.create_trainer_
+      # payloads returned -- mock_payload sets advantages=np.full(4, 1.0)).
+      self.assertTrue(
+          logger.metric_exists("", "rewards/advantage/mean", "train")
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/advantage/mean", "train"), 1.0
+      )
+      self.assertTrue(
+          logger.metric_exists("", "rewards/advantage/std", "train")
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/advantage/std", "train"), 0.0
+      )
+      self.assertTrue(
+          logger.metric_exists("", "rewards/advantage/min", "train")
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/advantage/min", "train"), 1.0
+      )
+      self.assertTrue(
+          logger.metric_exists("", "rewards/advantage/max", "train")
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/advantage/max", "train"), 1.0
+      )
+
       # 3. Rollout Metrics (collected from RolloutWorker responses)
       self.assertTrue(
           logger.metric_exists("", "rollout/prompt_length_mean", "train")

@@ -445,6 +445,7 @@ class StandardRLProgram(RLProgram):
     turns_list = []
     successes = []
     staleness_list = []
+    advantages_list = []
     for item in all_step_items:
       p_len = None
       prompt_tokens = getattr(item, "prompt_tokens", None)
@@ -477,6 +478,17 @@ class StandardRLProgram(RLProgram):
         completion_lengths.append(c_len)
       if p_len is not None and c_len is not None:
         total_lengths.append(p_len + c_len)
+
+      # RLTrainerPayload.advantages is [T] (unbatched, per-token) with the
+      # per-example advantage broadcast across every token -- np.mean
+      # recovers that scalar regardless of sequence length.
+      payload_advantages = getattr(
+          getattr(item, "payload", None), "advantages", None
+      )
+      if payload_advantages is not None:
+        adv_arr = np.asarray(payload_advantages)
+        if adv_arr.size:
+          advantages_list.append(float(np.mean(adv_arr)))
 
       traj = getattr(item, "traj", None)
       steps = getattr(traj, "steps", None) if traj else None
@@ -576,6 +588,27 @@ class StandardRLProgram(RLProgram):
       for tag, val in reward_stats.items():
         self.metrics_logger.log(
             self.metrics_prefix, f"rewards/{tag}", val, self.mode, log_step
+        )
+
+    # --- 2b. Advantage Metrics ---
+    # Mirrors AgenticGRPOLearner's rewards/advantage/* logging (non-experimental
+    # tunix/rl/agentic/agentic_grpo_learner.py), computed here from the
+    # RLTrainerPayloads AlgorithmAdapter.create_trainer_payloads already built
+    # in critique_stage, rather than recomputing advantages a second time.
+    if advantages_list:
+      advantage_stats = {
+          "mean": float(np.mean(advantages_list)),
+          "std": float(np.std(advantages_list)),
+          "min": float(np.min(advantages_list)),
+          "max": float(np.max(advantages_list)),
+      }
+      for tag, val in advantage_stats.items():
+        self.metrics_logger.log(
+            self.metrics_prefix,
+            f"rewards/advantage/{tag}",
+            val,
+            self.mode,
+            log_step,
         )
 
     # --- 3. Orchestrator Metrics ---
