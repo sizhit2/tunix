@@ -51,6 +51,11 @@ class _MockWorkerHandle(mock.MagicMock):
     self.role = role
     self.responses: list[list[datatypes.RolloutResponse]] = []
     self.metrics_buffer: exp_metrics.MetricsBuffer | None = None
+    # Set to simulate a real trainer's one-step-lagged metrics buffering: not
+    # visible via get_metrics() until stop() has been submitted, mirroring
+    # PeftTrainerV2.close()'s final flush.
+    self.final_metrics_buffer: exp_metrics.MetricsBuffer | None = None
+    self.stopped: bool = False
     self.train_step_count: int = 0
     self.dispatched_requests: list[Any] = []
 
@@ -98,7 +103,12 @@ class _MockWorkerHandle(mock.MagicMock):
       self.train_step_count += 1
       return self.train_step_count
     elif method_name == "get_metrics":
+      if self.stopped and self.final_metrics_buffer is not None:
+        return self.final_metrics_buffer
       return self.metrics_buffer
+    elif method_name == "stop":
+      self.stopped = True
+      return None
     elif method_name == "generate":
       if self.responses:
         return self.responses.pop(0)
@@ -1017,6 +1027,57 @@ class RLProgramTest(absltest.TestCase):
       )
       self.assertTrue(
           logger.metric_exists("", "orchestrator/step_time_sec", "train")
+      )
+
+    asyncio.run(_run())
+
+  def test_final_train_step_metrics_flushed_after_train_stage(self):
+    """Regression test: the last train_step's trainer metrics must not be dropped.
+
+    PeftTrainerV2 buffers a train_step's metrics one step behind (to overlap
+    the synchronous metrics write with the next step's async JAX dispatch).
+    That means the metrics for the true final train_step are only ever
+    written out when the trainer is stopped/closed -- if nothing pulls
+    get_metrics again after that, they're silently lost. Here the mock
+    trainer worker only exposes `final_metrics_buffer` once `stop()` has
+    been submitted (simulating that buffering), so this fails without
+    `StandardRLProgram`'s post-loop stop() + get_metrics() flush.
+    """
+
+    async def _run():
+      trainer_worker = _MockWorkerHandle(role="trainer")
+      # No metrics_buffer is available during the loop itself -- only after
+      # the final flush, matching the one-step-lag: a single-step run's
+      # in-loop get_metrics() pull would see nothing yet.
+      trainer_worker.metrics_buffer = None
+      trainer_worker.final_metrics_buffer = exp_metrics.MetricsBuffer(
+          id=0, scalar_metrics={"loss": 0.75}, mode="train"
+      )
+      rollout_worker = _MockWorkerHandle(role="rollout")
+      rollout_worker.responses = [[
+          _create_rollout_response(
+              "req_0", "prompt_data_0", group_index=0, reward=2.5
+          ),
+          _create_rollout_response(
+              "req_1", "prompt_data_0", group_index=1, reward=2.5
+          ),
+      ]]
+
+      engine = distributed_rl_engine.DistributedRLEngine(
+          rollout_workers=[rollout_worker],
+          trainer_workers={datatypes.Role.ACTOR: trainer_worker},
+      )
+
+      program = self._create_program(
+          dataset=["prompt_data_0"], reward_fns=[], sync_weights=False
+      )
+      await program.run_async(engine, max_steps=1)
+
+      self.assertTrue(trainer_worker.stopped)
+      logger = program.metrics_logger
+      self.assertTrue(logger.metric_exists("", "trainer/loss", "train"))
+      self.assertAlmostEqual(
+          logger.get_metric("", "trainer/loss", "train"), 0.75
       )
 
     asyncio.run(_run())

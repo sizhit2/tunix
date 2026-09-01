@@ -152,3 +152,19 @@ class AbstractRLEngine(Protocol):
   ) -> Any:
     """Requests the trainer worker for `role` to save a checkpoint."""
     ...
+
+  async def stop(
+      self,
+      role: datatypes.Role = datatypes.Role.ACTOR,
+      **kwargs: Any,
+  ) -> Any:
+    """Stops the trainer worker for `role`, flushing any buffered metrics.
+
+    Trainers may buffer metrics for a step behind their actual computation
+    (to overlap synchronous metrics I/O with the next step's async JAX
+    dispatch); stopping forces that pending buffer to be written out so a
+    subsequent `get_metrics` call can retrieve it. Callers that need the
+    truly last train step's metrics (e.g. after a training loop ends) should
+    call this before a final `get_metrics` pull.
+    """
+    ...

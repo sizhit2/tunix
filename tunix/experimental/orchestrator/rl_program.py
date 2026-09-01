@@ -288,6 +288,126 @@ class StandardRLProgram(RLProgram):
     finally:
       await self.scored_q.close()
 
+  def _log_trainer_metrics(
+      self,
+      trainer_metrics: Any,
+      step_result: Any,
+      log_step: int,
+  ) -> tuple[float | None, float | None]:
+    """Logs trainer/* metrics (loss, perplexity, lr, grad_norm, aux).
+
+    Extracted so both the per-step logging path in
+    `_collect_and_log_step_metrics` and the end-of-training final flush in
+    `train_stage` (see there for why one is needed) share the same parsing
+    and logging logic.
+
+    Returns:
+      (loss_val, perplexity_val), either of which may be None if
+      `trainer_metrics` carried no loss.
+    """
+    loss_val = None
+    perplexity_val = None
+    if trainer_metrics is None:
+      if isinstance(step_result, dict):
+        trainer_metrics = step_result.get("metrics")
+      elif step_result is not None:
+        trainer_metrics = step_result
+
+    if trainer_metrics is None:
+      return loss_val, perplexity_val
+
+    scalar_metrics = {}
+    weighted_metrics = {}
+    if hasattr(trainer_metrics, "scalar_metrics"):
+      scalar_metrics.update(getattr(trainer_metrics, "scalar_metrics", {}))
+    if hasattr(trainer_metrics, "weighted_metrics"):
+      weighted_metrics.update(getattr(trainer_metrics, "weighted_metrics", {}))
+    if isinstance(trainer_metrics, dict):
+      if (
+          "scalar_metrics" in trainer_metrics
+          or "weighted_metrics" in trainer_metrics
+      ):
+        scalar_metrics.update(trainer_metrics.get("scalar_metrics") or {})
+        weighted_metrics.update(trainer_metrics.get("weighted_metrics") or {})
+      else:
+        for k, v in trainer_metrics.items():
+          if k == "metrics":
+            continue
+          scalar_metrics[k] = v
+
+    # Loss & Perplexity
+    raw_loss = scalar_metrics.pop(
+        "loss", scalar_metrics.pop("trainer/loss", None)
+    )
+    if raw_loss is None and "loss" in weighted_metrics:
+      raw_loss = weighted_metrics.pop("loss")
+    elif raw_loss is None and "trainer/loss" in weighted_metrics:
+      raw_loss = weighted_metrics.pop("trainer/loss")
+
+    loss_val = _extract_scalar(raw_loss)
+    if loss_val is not None:
+      self.metrics_logger.log(
+          self.metrics_prefix, "trainer/loss", loss_val, self.mode, log_step
+      )
+      perplexity_val = float(np.exp(loss_val))
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "trainer/perplexity",
+          perplexity_val,
+          self.mode,
+          log_step,
+      )
+
+    # Learning Rate
+    raw_lr = scalar_metrics.pop(
+        "learning_rate", scalar_metrics.pop("trainer/learning_rate", None)
+    )
+    lr_val = _extract_scalar(raw_lr)
+    if lr_val is not None:
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "trainer/learning_rate",
+          lr_val,
+          self.mode,
+          log_step,
+      )
+
+    # Grad Norm
+    raw_gn = scalar_metrics.pop(
+        "grad_norm", scalar_metrics.pop("trainer/grad_norm", None)
+    )
+    gn_val = _extract_scalar(raw_gn)
+    if gn_val is not None:
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "trainer/grad_norm",
+          gn_val,
+          self.mode,
+          log_step,
+      )
+
+    # Auxiliary weighted metrics
+    for k, v in weighted_metrics.items():
+      val = _extract_scalar(v)
+      if val is not None:
+        metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
+        self.metrics_logger.log(
+            self.metrics_prefix, metric_key, val, self.mode, log_step
+        )
+
+    # Auxiliary scalar metrics
+    for k, v in scalar_metrics.items():
+      if k in ("perplexity", "trainer/perplexity"):
+        continue
+      val = _extract_scalar(v)
+      if val is not None:
+        metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
+        self.metrics_logger.log(
+            self.metrics_prefix, metric_key, val, self.mode, log_step
+        )
+
+    return loss_val, perplexity_val
+
   def _collect_and_log_step_metrics(
       self,
       *,
@@ -471,106 +591,9 @@ class StandardRLProgram(RLProgram):
       )
 
     # --- 4. Trainer Metrics ---
-    loss_val = None
-    perplexity_val = None
-    if trainer_metrics is None:
-      if isinstance(step_result, dict):
-        trainer_metrics = step_result.get("metrics")
-      elif step_result is not None:
-        trainer_metrics = step_result
-
-    if trainer_metrics is not None:
-      scalar_metrics = {}
-      weighted_metrics = {}
-      if hasattr(trainer_metrics, "scalar_metrics"):
-        scalar_metrics.update(getattr(trainer_metrics, "scalar_metrics", {}))
-      if hasattr(trainer_metrics, "weighted_metrics"):
-        weighted_metrics.update(
-            getattr(trainer_metrics, "weighted_metrics", {})
-        )
-      if isinstance(trainer_metrics, dict):
-        if (
-            "scalar_metrics" in trainer_metrics
-            or "weighted_metrics" in trainer_metrics
-        ):
-          scalar_metrics.update(trainer_metrics.get("scalar_metrics") or {})
-          weighted_metrics.update(trainer_metrics.get("weighted_metrics") or {})
-        else:
-          for k, v in trainer_metrics.items():
-            if k == "metrics":
-              continue
-            scalar_metrics[k] = v
-
-      # Loss & Perplexity
-      raw_loss = scalar_metrics.pop(
-          "loss", scalar_metrics.pop("trainer/loss", None)
-      )
-      if raw_loss is None and "loss" in weighted_metrics:
-        raw_loss = weighted_metrics.pop("loss")
-      elif raw_loss is None and "trainer/loss" in weighted_metrics:
-        raw_loss = weighted_metrics.pop("trainer/loss")
-
-      loss_val = _extract_scalar(raw_loss)
-      if loss_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix, "trainer/loss", loss_val, self.mode, log_step
-        )
-        perplexity_val = float(np.exp(loss_val))
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/perplexity",
-            perplexity_val,
-            self.mode,
-            log_step,
-        )
-
-      # Learning Rate
-      raw_lr = scalar_metrics.pop(
-          "learning_rate", scalar_metrics.pop("trainer/learning_rate", None)
-      )
-      lr_val = _extract_scalar(raw_lr)
-      if lr_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/learning_rate",
-            lr_val,
-            self.mode,
-            log_step,
-        )
-
-      # Grad Norm
-      raw_gn = scalar_metrics.pop(
-          "grad_norm", scalar_metrics.pop("trainer/grad_norm", None)
-      )
-      gn_val = _extract_scalar(raw_gn)
-      if gn_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/grad_norm",
-            gn_val,
-            self.mode,
-            log_step,
-        )
-
-      # Auxiliary weighted metrics
-      for k, v in weighted_metrics.items():
-        val = _extract_scalar(v)
-        if val is not None:
-          metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
-          self.metrics_logger.log(
-              self.metrics_prefix, metric_key, val, self.mode, log_step
-          )
-
-      # Auxiliary scalar metrics
-      for k, v in scalar_metrics.items():
-        if k in ("perplexity", "trainer/perplexity"):
-          continue
-        val = _extract_scalar(v)
-        if val is not None:
-          metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
-          self.metrics_logger.log(
-              self.metrics_prefix, metric_key, val, self.mode, log_step
-          )
+    loss_val, perplexity_val = self._log_trainer_metrics(
+        trainer_metrics, step_result, log_step
+    )
 
     return {
         "reward_mean": reward_mean,
@@ -729,6 +752,33 @@ class StandardRLProgram(RLProgram):
       if self.on_step_end:
         self.on_step_end(current_step, step_result)
       self._step += 1
+
+    await self._flush_final_trainer_metrics()
+
+  async def _flush_final_trainer_metrics(self) -> None:
+    """Retrieves and logs the last completed train step's trainer metrics.
+
+    PeftTrainerV2 buffers metrics one train_step behind so its synchronous
+    write can overlap with the next step's async JAX dispatch (see
+    `_write_train_metrics` there); the pending buffer for train_step k is
+    only flushed when train_step k+1 calls `_write_train_metrics` again, or
+    when the trainer is closed. Since `get_metrics` above is only ever
+    pulled once per outer loop iteration right after that iteration's
+    train_step, the very last iteration's metrics are still sitting in that
+    one-behind buffer when the loop exits normally (max_steps reached, or
+    the dataset ran out) -- nothing ever triggers one more write to flush
+    them, so they were silently dropped. Stopping the trainer here forces
+    that final flush, and this does one extra get_metrics pull to retrieve
+    and log it under the last step's log_step, matching the numbering used
+    throughout the loop above.
+    """
+    if self._step == 0:
+      return
+    await self.engine.stop(role=datatypes.Role.ACTOR)
+    final_metrics = await self.engine.get_metrics(role=datatypes.Role.ACTOR)
+    if not final_metrics:
+      return
+    self._log_trainer_metrics(final_metrics, None, self._step - 1)
 
   async def run_async(
       self,

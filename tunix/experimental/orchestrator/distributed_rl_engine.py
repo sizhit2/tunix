@@ -560,3 +560,16 @@ class DistributedRLEngine(rl_engine_interface.AbstractRLEngine):
     return await self._invoke_worker(
         worker, "save_checkpoint", metadata=metadata, **kwargs
     )
+
+  async def stop(
+      self,
+      role: datatypes.Role = datatypes.Role.ACTOR,
+      **kwargs: Any,
+  ) -> Any:
+    """Requests the trainer worker for `role` to stop, flushing buffered metrics."""
+    worker = self._trainer_workers.get(role)
+    if worker is None:
+      raise ValueError(f"No trainer worker registered for role {role}")
+    role_name = role.value if isinstance(role, datatypes.Role) else str(role)
+    logging.info("Stopping %s trainer worker...", role_name)
+    return await self._invoke_worker(worker, "stop", **kwargs)
