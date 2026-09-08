@@ -38,9 +38,11 @@ def build_trajectory_store(
   Args:
     config: The store configuration, or None to disable.
     owner: Identifies the calling process in the log line below (e.g.
-      "orchestrator", or a worker id). A run's processes each build their own
-      store, so this is what makes an aggregated log answer "did everyone
-      agree on the same run_id?".
+      "orchestrator", or a worker id). absl log lines carry a thread id but
+      no process, host or container identity, so without this there is no way
+      to attribute a reported run_id to a process wherever several of them
+      share one log stream — as rollout workers under a single launcher
+      process do.
 
   Returns:
     A `FileTrajectoryStore`, an `InMemoryTrajectoryStore`, or None when the
