@@ -58,6 +58,9 @@ WANDB_PROJECT=${WANDB_PROJECT:-trellis-gsm8k}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-}
 WANDB_API_KEY=${WANDB_API_KEY:-}
 SAMPLER=${SAMPLER:-inprocess_vllm}
+# Native <think> reasoning. Off by default (the non-experimental GSM8K
+# recipe does not use thinking either); set ENABLE_THINKING=true to opt in.
+ENABLE_THINKING=${ENABLE_THINKING:-false}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-none}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
@@ -490,6 +493,7 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
     --model_dir="$MODEL_DIR"
     --model_name="$MODEL_NAME"
     --sampler="$SAMPLER"
+    --enable_thinking="$ENABLE_THINKING"
     --mesh_fsdp="$ROLLOUT_FSDP"
     --mesh_tp="$ROLLOUT_TP"
     --tokenizer_path="$TOKENIZER_PATH"

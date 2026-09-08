@@ -58,14 +58,24 @@ def _import_vllm_sampler():
   return vllm_sampler
 
 
-def _chat_parser_for(model_id: str, tokenizer):
-  """Selects the chat template parser by model family."""
+def _str2bool(value: str) -> bool:
+  """Parses a bool from a launcher-provided string ("true"/"false")."""
+  return str(value).strip().lower() in ("1", "true", "yes", "y")
+
+
+def _chat_parser_for(model_id: str, tokenizer, enable_thinking: bool = False):
+  """Selects the chat template parser by model family.
+
+  enable_thinking defaults to True to match the non-experimental recipe, which
+  lets Qwen emit its native <think>...</think> reasoning instead of an injected
+  empty <think></think> prefix.
+  """
   name = model_id.lower()
   for family, parser_cls in CHAT_PARSERS.items():
     if family in name:
-      return parser_cls(tokenizer, enable_thinking=False)
+      return parser_cls(tokenizer, enable_thinking=enable_thinking)
   return chat_parser_lib.DefaultChatTemplateParser(
-      tokenizer, enable_thinking=False
+      tokenizer, enable_thinking=enable_thinking
   )
 
 
@@ -75,6 +85,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument("--port", type=int, default=20001)
   parser.add_argument("--worker_id", type=str, default="vllm-rollout-0")
   parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-1.7B")
+  parser.add_argument(
+      "--enable_thinking",
+      type=_str2bool,
+      default=False,
+      help=(
+          "Enable the model's native thinking mode in the chat parser. Off by"
+          " default to preserve the original experimental behaviour; recipes"
+          " opt in explicitly."
+      ),
+  )
   parser.add_argument(
       "--model_dir", type=str, default=os.getenv("MODEL_DIR", "")
   )
@@ -238,7 +258,9 @@ def _create_vanilla_worker(args, tokenizer):
   )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
-  chat_parser = _chat_parser_for(args.model_id or args.model_name, tokenizer)
+  chat_parser = _chat_parser_for(
+      args.model_id or args.model_name, tokenizer, args.enable_thinking
+  )
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
       config=config,
@@ -266,7 +288,9 @@ def _create_vllm_worker(args, tokenizer):
     )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
-  chat_parser = _chat_parser_for(args.model_id or args.model_name, tokenizer)
+  chat_parser = _chat_parser_for(
+      args.model_id or args.model_name, tokenizer, args.enable_thinking
+  )
   logging.info("Creating RolloutWorker wrapper...")
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
