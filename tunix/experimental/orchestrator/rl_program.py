@@ -520,11 +520,20 @@ class StandardRLProgram(RLProgram):
     advantage_min = float(np.min(step_advantages)) if step_advantages else 0.0
     advantage_max = float(np.max(step_advantages)) if step_advantages else 0.0
     if step_advantages:
+      # abs_mean and nonzero_frac mirror the non-experimental GRPO learner
+      # (tunix/rl/algo_core.py). advantage/mean is ~0 by construction -- GRPO
+      # centers advantages within each group -- so it carries no learning
+      # signal. abs_mean (mean |A|) and nonzero_frac (share of |A|>1e-8, the
+      # same threshold algo_core uses) survive that cancellation and are the
+      # metrics that actually indicate whether a step produced gradient.
+      _adv = np.abs(np.asarray(step_advantages, dtype=np.float32))
       advantage_stats = {
           "mean": advantage_mean,
           "max": advantage_max,
           "min": advantage_min,
           "std": advantage_std,
+          "abs_mean": float(np.mean(_adv)),
+          "nonzero_frac": float(np.mean(_adv > 1e-8)),
       }
       for tag, val in advantage_stats.items():
         self.metrics_logger.log(
