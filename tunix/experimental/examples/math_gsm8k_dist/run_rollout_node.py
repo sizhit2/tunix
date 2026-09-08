@@ -30,6 +30,7 @@ from jax.sharding import Mesh
 from transformers import AutoTokenizer
 from tunix.experimental.examples.math_gsm8k_dist import gsm8k
 from tunix.experimental.examples.math_gsm8k_dist import models
+from tunix.experimental.examples.math_gsm8k_dist import trajectory_store_flags
 from tunix.experimental.rollout import inprocess_vllm_sampler_adapter
 from tunix.experimental.rollout import vanilla_sampler_adapter
 from tunix.experimental.weight_sync import raiden_weight_sync_delegate
@@ -99,6 +100,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       choices=list(weight_sync.WeightSyncMode),
       help="Weight sync mode (e.g. raiden, fallback).",
   )
+  trajectory_store_flags.add_arguments(parser)
   return parser.parse_args(argv)
 
 
@@ -131,6 +133,7 @@ def _create_vanilla_worker(args, tokenizer):
       return_logprobs=True,
       env_name=gsm8k.GSM8K_ENV_NAME,
       agent_name=gsm8k.GSM8K_AGENT_NAME,
+      trajectory_store_config=trajectory_store_flags.config_from_args(args),
   )
   sampler_adapter = vanilla_sampler_adapter.VanillaSamplerAdapter(
       server_id=args.worker_id,
@@ -223,6 +226,7 @@ def _create_vllm_worker(args, tokenizer):
       rollout_vllm_model_version=vllm_model,
       env_name=gsm8k.GSM8K_ENV_NAME,
       agent_name=gsm8k.GSM8K_AGENT_NAME,
+      trajectory_store_config=trajectory_store_flags.config_from_args(args),
   )
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
