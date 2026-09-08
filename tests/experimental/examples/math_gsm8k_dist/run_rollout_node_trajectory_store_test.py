@@ -14,48 +14,18 @@
 
 """Tests that run_rollout_node threads the store config into its worker.
 
-Exercises the vanilla sampler path, which needs no vLLM at runtime — but
-`run_rollout_node` imports the vLLM adapters at module level regardless of
-which sampler is selected, so those imports are stubbed below before it is
-imported. Everything past that (RolloutConfig, RolloutWorker, and the store
-they build) is the real code.
+Exercises the vanilla sampler path, which needs no vLLM — only the model,
+mesh and sampler adapter are mocked out. Everything else (the parser,
+RolloutConfig, RolloutWorker, and the store they build) is the real code.
 """
 
-import importlib.abc
-import importlib.machinery
-import sys
 import tempfile
 from unittest import mock
 
 from absl.testing import absltest
 from etils import epath
-
-
-class _VllmStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-  """Resolves any `vllm.*` / TPU-inference import to a MagicMock package."""
-
-  ROOTS = frozenset({"vllm", "tpu_inference", "tpu_commons"})
-
-  def find_spec(self, fullname, path=None, target=None):
-    if fullname.split(".")[0] in self.ROOTS:
-      return importlib.machinery.ModuleSpec(fullname, self)
-    return None
-
-  def create_module(self, spec):
-    module = mock.MagicMock()
-    module.__name__ = spec.name
-    module.__path__ = []  # Marks it a package so submodules resolve too.
-    module.__spec__ = spec
-    return module
-
-  def exec_module(self, module):
-    pass
-
-
-sys.meta_path.insert(0, _VllmStubFinder())
-
-from tunix.experimental.examples.math_gsm8k_dist import run_rollout_node  # pylint: disable=g-import-not-at-top
-from tunix.experimental.trajectory import file_store  # pylint: disable=g-import-not-at-top
+from tunix.experimental.examples.math_gsm8k_dist import run_rollout_node
+from tunix.experimental.trajectory import file_store
 
 
 class VanillaRolloutNodeTrajectoryStoreTest(absltest.TestCase):
