@@ -134,24 +134,35 @@ def extract_boxed_answer(text: str) -> str | None:
   fallback = re.search(r"\\boxed\s*\{?\s*([a-zA-Z0-9\.,\-]+)\s*\}?", content)
   if fallback:
     return fallback.group(1).strip()
+  # Parity with the non-experimental recipe (examples/math_gsm8k): when no
+  # \boxed is present, accept a non-empty <answer> block as the answer.
+  if answer_blocks and answer_blocks[-1].strip():
+    return answer_blocks[-1].strip()
   return None
 
 
 def is_gsm8k_format_correct(text: str) -> bool:
-  """Checks the reasoning-then-boxed-answer format used by the GSM8K recipe."""
-  has_reasoning = text.count("</reasoning>") == 1
-  has_answer = text.count("<answer>") == 1 and text.count("</answer>") == 1
-  reasoning_end = text.find("</reasoning>")
-  answer_open = text.find("<answer>")
-  answer_close = text.find("</answer>")
-  return (
-      has_reasoning
-      and has_answer
-      and reasoning_end != -1
-      and answer_open != -1
-      and answer_close != -1
-      and reasoning_end < answer_open < answer_close
+  """Checks reasoning-then-answer format, matching the non-experimental recipe.
+
+  This mirrors ``is_vtc_format_correct`` in ``examples/math_gsm8k`` so the two
+  GSM8K recipes score identically. The reasoning component is satisfied by
+  either an explicit ``<reasoning>...</reasoning>`` pair or the model's native
+  ``<think>...</think>`` block (Qwen thinking mode), and the answer component
+  by either a ``\boxed`` expression or an ``<answer>...</answer>`` pair.
+
+  The previous predicate keyed off a single ``</reasoning>`` that had to
+  precede a single ``<answer>...</answer>``. Qwen3 never emits that exact
+  shape -- it produces ``<think>`` reasoning and a ``\boxed`` answer -- so the
+  predicate was False for every completion and the format axis carried no
+  signal.
+  """
+  has_reasoning = ("<reasoning>" in text and "</reasoning>" in text) or (
+      "<think>" in text and "</think>" in text
   )
+  has_answer = (r"\boxed" in text) or (
+      "<answer>" in text and "</answer>" in text
+  )
+  return bool(has_reasoning and has_answer)
 
 
 def normalize_answer(text: Any) -> str | None:
