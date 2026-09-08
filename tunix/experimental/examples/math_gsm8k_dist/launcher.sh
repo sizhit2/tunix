@@ -40,6 +40,12 @@ MAX_STEPS=${MAX_STEPS:-1}
 TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-2}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-50}
+# Actor optimizer, aligned with the non-experimental recipe
+# (examples/math_gsm8k/qwen_agentic_maxtext.py).
+MAX_GRAD_NORM=${MAX_GRAD_NORM:-1.0}
+ADAM_B1=${ADAM_B1:-0.9}
+ADAM_B2=${ADAM_B2:-0.99}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.01}
 LORA_RANK=${LORA_RANK:-64}
 LORA_ALPHA=${LORA_ALPHA:-64.0}
 USE_LORA=${USE_LORA:-0}
@@ -437,6 +443,10 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --mini_batch_size="$MINI_BATCH_SIZE"
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
+    --max_grad_norm="$MAX_GRAD_NORM"
+    --adam_b1="$ADAM_B1"
+    --adam_b2="$ADAM_B2"
+    --weight_decay="$WEIGHT_DECAY"
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
     --trainer_backend="$TRAINER_BACKEND"

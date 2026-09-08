@@ -37,6 +37,11 @@ export TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
 export TRAINER_BACKEND=${TRAINER_BACKEND:-tunix}
 export MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-$((BATCH_SIZE * NUM_GENERATIONS))}
 export EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-1000000}
+# Actor optimizer, aligned with the non-experimental recipe.
+export MAX_GRAD_NORM=${MAX_GRAD_NORM:-1.0}
+export ADAM_B1=${ADAM_B1:-0.9}
+export ADAM_B2=${ADAM_B2:-0.99}
+export WEIGHT_DECAY=${WEIGHT_DECAY:-0.01}
 export LORA_RANK=${LORA_RANK:-16}
 export LORA_ALPHA=${LORA_ALPHA:-16.0}
 export USE_LORA=${USE_LORA:-0}
@@ -190,6 +195,10 @@ start_trainer() {
         --mini_batch_size=${MINI_BATCH_SIZE} \
         --train_micro_batch_size=${TRAIN_MICRO_BATCH_SIZE} \
         --eval_every_n_steps=${EVAL_EVERY_N_STEPS} \
+        --max_grad_norm=${MAX_GRAD_NORM} \
+        --adam_b1=${ADAM_B1} \
+        --adam_b2=${ADAM_B2} \
+        --weight_decay=${WEIGHT_DECAY} \
         --lora_rank=${LORA_RANK} \
         --lora_alpha=${LORA_ALPHA} \
         --checkpoint_save_interval_steps=${CHECKPOINT_SAVE_INTERVAL_STEPS} \

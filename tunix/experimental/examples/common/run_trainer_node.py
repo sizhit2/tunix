@@ -50,6 +50,32 @@ DEFAULT_MODEL_DOWNLOAD_DIR = os.path.join(
 )
 
 
+def _build_actor_optimizer(args):
+  """Builds the actor optimizer from CLI flags.
+
+  Defaults reproduce the previous bare optax.adamw (no clipping, optax defaults
+  b2=0.999 / weight_decay=0.0), so recipes that share this trainer node and do
+  not set the flags -- e.g. deepswe_dist -- are unchanged. The GSM8K launcher
+  passes values aligned with the non-experimental recipe
+  (examples/math_gsm8k/qwen_agentic_maxtext.py): max_grad_norm=1.0, b1=0.9,
+  b2=0.99, weight_decay=0.01.
+
+  TODO(tunix-dev): replace these individual flags with a structured actor
+  optimizer config (opt_type / schedule / b1 / b2 / weight_decay /
+  max_grad_norm), matching actor_optimizer_config in
+  tunix/cli/base_agentic_config.yaml.
+  """
+  adamw = optax.adamw(
+      learning_rate=args.learning_rate,
+      b1=args.adam_b1,
+      b2=args.adam_b2,
+      weight_decay=args.weight_decay,
+  )
+  if args.max_grad_norm is not None:
+    return optax.chain(optax.clip_by_global_norm(args.max_grad_norm), adamw)
+  return adamw
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="JAX trainer worker process")
   parser.add_argument("--port", type=int, default=20000)
@@ -76,6 +102,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument("--compute_logps_chunk_size", type=int, default=0)
   parser.add_argument("--eval_every_n_steps", type=int, default=1000000)
   parser.add_argument("--learning_rate", type=float, default=2.0e-7)
+  # Actor optimizer knobs. Defaults reproduce the previous bare optax.adamw
+  # (no grad clip; optax adamw defaults b2=0.999, weight_decay=0.0), so recipes
+  # that share this trainer node and do not set them -- e.g. deepswe_dist -- are
+  # unchanged. The GSM8K launcher passes values aligned with the
+  # non-experimental recipe (examples/math_gsm8k/qwen_agentic_maxtext.py).
+  parser.add_argument("--max_grad_norm", type=float, default=None)
+  parser.add_argument("--adam_b1", type=float, default=0.9)
+  parser.add_argument("--adam_b2", type=float, default=0.999)
+  parser.add_argument("--weight_decay", type=float, default=0.0)
   parser.add_argument("--use_lora", action="store_true")
   parser.add_argument("--lora_rank", type=int, default=64)
   parser.add_argument("--lora_alpha", type=float, default=64.0)
@@ -376,7 +411,7 @@ def _create_tunix_trainer_factory(args) -> Any:
     with mesh:
       trainer = peft_trainer_v2.PeftTrainer(
           actor_model,
-          optax.adamw(learning_rate=args.learning_rate),
+          _build_actor_optimizer(args),
           training_config,
           sampler_type=args.sampler_type,
       )
