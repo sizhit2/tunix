@@ -166,9 +166,13 @@ class RolloutWorker(abstract_worker.Worker):
 
   def stop(self) -> datatypes.Response:
     self.state = WorkerState.STOPPED
-    self.manager.cancel_all()
-    if self._trajectory_store is not None:
-      self._trajectory_store.close()
+    try:
+      self.manager.cancel_all()
+    finally:
+      # Runs even when cancel_all raises, so a failed stop releases the
+      # store's background writer thread instead of leaking it.
+      if self._trajectory_store is not None:
+        self._trajectory_store.close()
     return datatypes.Response()
 
   def pause(self) -> datatypes.Response:

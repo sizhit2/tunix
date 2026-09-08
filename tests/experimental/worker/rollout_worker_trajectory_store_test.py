@@ -15,6 +15,7 @@
 """Tests for RolloutWorker's Trajectory Store construction and shutdown."""
 
 import tempfile
+from unittest import mock
 
 from absl.testing import absltest
 from etils import epath
@@ -107,6 +108,16 @@ class RolloutWorkerTrajectoryStoreTest(absltest.TestCase):
       store.add_step(
           trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1
       )
+
+  def test_stop_closes_the_store_even_when_cancel_all_raises(self):
+    worker = _worker()
+    worker._trajectory_store = mock.MagicMock()  # pylint: disable=protected-access
+    worker.manager.cancel_all = mock.MagicMock(
+        side_effect=RuntimeError("cancel_all failed")
+    )
+    with self.assertRaises(RuntimeError):
+      worker.stop()
+    worker._trajectory_store.close.assert_called_once()  # pylint: disable=protected-access
 
   def test_stop_without_a_store_does_not_raise(self):
     worker = _worker()

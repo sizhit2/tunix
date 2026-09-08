@@ -165,11 +165,15 @@ class ClusterOrchestrator:
   def shutdown(self) -> None:
     """Shuts down all workers and closes health monitoring resources."""
     logging.info("Shutting down ClusterOrchestrator...")
-    self.monitor.close()
-    self._shutdown_remote_workers()
-    self.lifecycle_driver.shutdown()
-    if self.trajectory_store is not None:
-      self.trajectory_store.close()
+    try:
+      self.monitor.close()
+      self._shutdown_remote_workers()
+      self.lifecycle_driver.shutdown()
+    finally:
+      # Runs even when one of the steps above raises, so a failed shutdown
+      # releases the store's background writer thread instead of leaking it.
+      if self.trajectory_store is not None:
+        self.trajectory_store.close()
 
   def validate_startup(self, alg_config: Any, training_config: Any) -> None:
     """Validates cluster geometry against configurations."""

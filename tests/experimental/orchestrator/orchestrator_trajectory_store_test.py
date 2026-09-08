@@ -84,6 +84,16 @@ class ClusterOrchestratorTrajectoryStoreTest(absltest.TestCase):
           trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1
       )
 
+  def test_shutdown_closes_the_store_even_when_a_prior_step_raises(self):
+    orch = _orchestrator()
+    orch.trajectory_store = mock.MagicMock()
+    orch.lifecycle_driver.shutdown = mock.MagicMock(
+        side_effect=RuntimeError("lifecycle shutdown failed")
+    )
+    with self.assertRaises(RuntimeError):
+      orch.shutdown()
+    orch.trajectory_store.close.assert_called_once()
+
   def test_shutdown_without_a_store_does_not_raise(self):
     orch = _orchestrator()
     orch.shutdown()
