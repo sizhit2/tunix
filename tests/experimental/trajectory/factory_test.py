@@ -50,6 +50,22 @@ class BuildTrajectoryStoreTest(absltest.TestCase):
     store = factory.build_trajectory_store(config)
     self.assertIsInstance(store, in_memory_store.InMemoryTrajectoryStore)
 
+  def test_file_backend_logs_owner_and_resolved_path(self):
+    # This log line is how a run_id mismatch between the orchestrator and its
+    # workers becomes visible; without it the symptom is a silent empty read.
+    tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
+    config = config_lib.TrajectoryStoreConfig(
+        enabled=True, backend="file", root_dir=str(tmp_dir), run_id="run_c"
+    )
+    with self.assertLogs(level="INFO") as logs:
+      store = factory.build_trajectory_store(config, owner="rollout-0")
+    try:
+      line = "\n".join(logs.output)
+      self.assertIn("owner=rollout-0", line)
+      self.assertIn(str(tmp_dir / "run_c"), line)
+    finally:
+      store.close()
+
   def test_two_calls_build_two_independent_instances(self):
     # There is no cross-process (or even cross-call) singleton: the guard
     # against double construction is that callers build the store exactly

@@ -14,6 +14,7 @@
 
 """Builds the Trajectory Store instance a process should use, or None."""
 
+from absl import logging
 from tunix.experimental.trajectory import config as config_lib
 from tunix.experimental.trajectory import file_store
 from tunix.experimental.trajectory import in_memory_store
@@ -22,6 +23,8 @@ from tunix.experimental.trajectory import store
 
 def build_trajectory_store(
     config: config_lib.TrajectoryStoreConfig | None,
+    *,
+    owner: str = "unknown",
 ) -> store.TrajectoryReader | store.TrajectoryWriter | None:
   """Builds this process's Trajectory Store, or None if disabled.
 
@@ -34,6 +37,10 @@ def build_trajectory_store(
 
   Args:
     config: The store configuration, or None to disable.
+    owner: Identifies the calling process in the log line below (e.g.
+      "orchestrator", or a worker id). A run's processes each build their own
+      store, so this is what makes an aggregated log answer "did everyone
+      agree on the same run_id?".
 
   Returns:
     A `FileTrajectoryStore`, an `InMemoryTrajectoryStore`, or None when the
@@ -42,7 +49,20 @@ def build_trajectory_store(
   if config is None or not config.enabled:
     return None
   if config.backend == "file":
-    return file_store.FileTrajectoryStore(
+    built = file_store.FileTrajectoryStore(
         root_dir=config.root_dir, run_id=config.run_id
     )
+    # A run_id that differs between the orchestrator and its workers splits
+    # one run across separate directory trees, which otherwise surfaces only
+    # as an empty read on the orchestrator side. Logging the resolved path on
+    # every process turns that into one grep.
+    logging.info(
+        "[trajectory-store] owner=%s backend=file path=%s", owner, built.root_dir
+    )
+    return built
+  logging.info(
+      "[trajectory-store] owner=%s backend=memory (process-local; not visible"
+      " to any other process)",
+      owner,
+  )
   return in_memory_store.InMemoryTrajectoryStore()

@@ -15,6 +15,14 @@
 """Configuration gating Trajectory Store construction and usage."""
 
 import dataclasses
+import re
+from typing import Final
+
+
+# Mirrors `file_store._TRAJECTORY_ID_PATTERN`: a run_id becomes a path segment
+# under root_dir, so it is held to the same character rule as the trajectory
+# directory names nested beneath it.
+_RUN_ID_REGEX: Final[re.Pattern[str]] = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 @dataclasses.dataclass
@@ -37,10 +45,15 @@ class TrajectoryStoreConfig:
       — not visible to any other process without extra replication).
     root_dir: Base directory for the file backend (local path or `gs://`
       URI). Required when `enabled` and `backend == "file"`.
-    run_id: Identifier scoping paths under `root_dir`. Must be identical
-      across every process sharing one run (the orchestrator and every
-      rollout worker), and must stay the same across a process restart for
-      resume to work.
+    run_id: Identifier scoping paths under `root_dir`. Required when
+      `enabled` and `backend == "file"`; unused by the memory backend. Must
+      be identical across every process sharing one run (the orchestrator and
+      every rollout worker), and must stay the same across a process restart
+      for resume to work — so generate it once, at whatever single point
+      launches the run, and pass the same value to every process. Never
+      default it per-process: each process builds its own config, so a
+      generated default would give every process a different run_id and
+      silently split one run across N directory trees.
     resume_on_restart: Documents intent to read back prior steps after a
       restart. Rejected together with `backend == "memory"`, since a
       process-local store has nothing to resume from once the process that
@@ -61,11 +74,28 @@ class TrajectoryStoreConfig:
           "TrajectoryStoreConfig.backend must be 'file' or 'memory', got"
           f" {self.backend!r}."
       )
-    if self.backend == "file" and not self.root_dir:
-      raise ValueError(
-          "TrajectoryStoreConfig.root_dir is required when enabled and"
-          " backend == 'file'."
-      )
+    if self.backend == "file":
+      if not self.root_dir:
+        raise ValueError(
+            "TrajectoryStoreConfig.root_dir is required when enabled and"
+            " backend == 'file'."
+        )
+      if not self.run_id:
+        raise ValueError(
+            "TrajectoryStoreConfig.run_id is required when enabled and"
+            " backend == 'file'. Without it every run writes straight into"
+            " root_dir, and since trajectory ids restart from the first"
+            " prompt each run, a later run silently overwrites an earlier"
+            " one's trajectories."
+        )
+      if not _RUN_ID_REGEX.match(self.run_id):
+        raise ValueError(
+            f"TrajectoryStoreConfig.run_id {self.run_id!r} contains"
+            " unsupported characters; only letters, digits, underscores and"
+            " hyphens are allowed. A run_id carrying a path separator would"
+            " nest the trajectory directories a level deeper than reads look"
+            " for them, which fails silently as an empty store."
+        )
     if self.backend == "memory" and self.resume_on_restart:
       raise ValueError(
           "TrajectoryStoreConfig(backend='memory', resume_on_restart=True)"

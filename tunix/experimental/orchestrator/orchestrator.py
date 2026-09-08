@@ -80,7 +80,7 @@ class ClusterOrchestrator:
     # Tier 1 case, and StandardRLProgram's `trajectory_store` argument for
     # Tier 3.
     self.trajectory_store = trajectory_factory.build_trajectory_store(
-        trajectory_store_config
+        trajectory_store_config, owner="orchestrator"
     )
 
   def __enter__(self) -> "ClusterOrchestrator":

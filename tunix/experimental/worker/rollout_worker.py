@@ -108,7 +108,8 @@ class RolloutWorker(abstract_worker.Worker):
     # RolloutWorker instance, so there is no separate guard against
     # constructing the store twice. See trajectory/factory.py.
     self._trajectory_store = trajectory_factory.build_trajectory_store(
-        config.trajectory_store_config if config is not None else None
+        config.trajectory_store_config if config is not None else None,
+        owner=worker_id,
     )
 
   @property
