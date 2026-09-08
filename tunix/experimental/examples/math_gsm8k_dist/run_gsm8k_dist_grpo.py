@@ -51,6 +51,7 @@ if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
 from tunix.experimental.common import datatypes  # pylint: disable=g-import-not-at-top
+from tunix.experimental.examples.math_gsm8k_dist import trajectory_store_flags  # pylint: disable=g-import-not-at-top
 from tunix.experimental.orchestrator import algorithm_adapter  # pylint: disable=g-import-not-at-top
 from tunix.experimental.orchestrator import batch_assembly  # pylint: disable=g-import-not-at-top
 from tunix.experimental.orchestrator import orchestrator  # pylint: disable=g-import-not-at-top
@@ -163,6 +164,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--rpc_timeout_s", type=float, default=1800.0)
   parser.add_argument("--stop_workers_on_exit", action="store_true")
+  trajectory_store_flags.add_arguments(parser)
   return parser.parse_args(argv)
 
 
@@ -598,7 +600,8 @@ def main(argv: list[str], context: Any = None) -> None:
   cluster = orchestrator.ClusterOrchestrator(
       weight_sync_coordinator=_make_weight_sync_coordinator(
           trainer_handle, rollout_handle
-      )
+      ),
+      trajectory_store_config=trajectory_store_flags.config_from_args(args),
   )
 
   _register_workers(
@@ -645,6 +648,10 @@ def main(argv: list[str], context: Any = None) -> None:
           pad_id=pad_id,
       ),
       metrics_logging_options=metrics_logging_options,
+      # Tier 3 builds its own program, so the store the cluster already
+      # constructed has to be threaded in by hand; the program uses it but
+      # never closes it (cluster.shutdown() owns that).
+      trajectory_store=cluster.trajectory_store,
       max_staleness=args.max_staleness,
       sync_weights=False,
       on_step_begin=lambda step: logging.info(

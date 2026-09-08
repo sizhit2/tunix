@@ -30,6 +30,7 @@ from jax.sharding import Mesh
 from transformers import AutoTokenizer
 from tunix.experimental.examples.math_gsm8k_dist import gsm8k
 from tunix.experimental.examples.math_gsm8k_dist import models
+from tunix.experimental.examples.math_gsm8k_dist import trajectory_store_flags
 from tunix.experimental.rollout import inprocess_vllm_sampler_adapter
 from tunix.experimental.rollout import vanilla_sampler_adapter
 from tunix.experimental.weight_sync import raiden_weight_sync_delegate
@@ -38,7 +39,6 @@ from tunix.experimental.worker import remote_execution
 from tunix.experimental.worker import rollout_worker
 from tunix.generate import mappings as mappings_lib
 from tunix.generate import tokenizer_adapter as tokenizer_adapter_lib
-from tunix.generate import vllm_sampler
 from tunix.models.qwen3 import mapping_vllm_jax
 from tunix.rl.agentic.parser.chat_template_parser import parser as chat_parser_lib
 
@@ -99,6 +99,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       choices=list(weight_sync.WeightSyncMode),
       help="Weight sync mode (e.g. raiden, fallback).",
   )
+  trajectory_store_flags.add_arguments(parser)
   return parser.parse_args(argv)
 
 
@@ -131,6 +132,7 @@ def _create_vanilla_worker(args, tokenizer):
       return_logprobs=True,
       env_name=gsm8k.GSM8K_ENV_NAME,
       agent_name=gsm8k.GSM8K_AGENT_NAME,
+      trajectory_store_config=trajectory_store_flags.config_from_args(args),
   )
   sampler_adapter = vanilla_sampler_adapter.VanillaSamplerAdapter(
       server_id=args.worker_id,
@@ -157,6 +159,11 @@ def _create_vanilla_worker(args, tokenizer):
 
 def _create_vllm_worker(args, tokenizer):
   """Creates an in-process vLLM sampler rollout worker instance."""
+  # Imported here rather than at module scope so that --sampler=vanilla runs
+  # on a host without vLLM installed; this is the only import in this file
+  # that pulls it in.
+  from tunix.generate import vllm_sampler  # pylint: disable=g-import-not-at-top
+
   logging.info("Creating vLLM mapping config...")
   mapping_config = mappings_lib.MappingConfig(
       lora_to_hf_mappings=mapping_vllm_jax.LORA_TO_HF_MAPPINGS
@@ -223,6 +230,7 @@ def _create_vllm_worker(args, tokenizer):
       rollout_vllm_model_version=vllm_model,
       env_name=gsm8k.GSM8K_ENV_NAME,
       agent_name=gsm8k.GSM8K_AGENT_NAME,
+      trajectory_store_config=trajectory_store_flags.config_from_args(args),
   )
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
