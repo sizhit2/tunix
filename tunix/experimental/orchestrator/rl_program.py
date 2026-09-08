@@ -33,6 +33,8 @@ from tunix.experimental.orchestrator import algorithm_adapter
 from tunix.experimental.orchestrator import batch_assembly
 from tunix.experimental.orchestrator import rl_engine_interface
 from tunix.experimental.queue_manager import trajectory_queue_manager
+from tunix.experimental.trajectory import config as trajectory_config_lib
+from tunix.experimental.trajectory import factory as trajectory_factory
 from tunix.rl import common as rl_common
 from tunix.sft import metrics_logger as metrics_logger_lib
 
@@ -105,6 +107,9 @@ class StandardRLProgram(RLProgram):
       max_staleness: int = 0,
       sync_weights: bool = True,
       metrics_logging_options: MetricsLoggerOptions | None = None,
+      trajectory_store_config: (
+          trajectory_config_lib.TrajectoryStoreConfig | None
+      ) = None,
       metrics_prefix: str = "",
       mode: Mode | str = Mode.TRAIN,
       on_step_begin: Callable[[int], None] | None = None,
@@ -126,6 +131,12 @@ class StandardRLProgram(RLProgram):
     self.max_staleness = max_staleness
     self.sync_weights = sync_weights
     self.metrics_logger: MetricsLogger = MetricsLogger(metrics_logging_options)
+    # Built at most once per process: this __init__ runs exactly once per
+    # StandardRLProgram instance, so there is no separate guard against
+    # constructing the store twice. See trajectory/factory.py.
+    self._trajectory_store = trajectory_factory.build_trajectory_store(
+        trajectory_store_config
+    )
     self.metrics_prefix = metrics_prefix
     self.mode = mode if isinstance(mode, Mode) else Mode(mode)
     self.on_step_begin = on_step_begin
@@ -147,6 +158,8 @@ class StandardRLProgram(RLProgram):
     """Flushes and closes the metrics logger and associated resources."""
     if self.metrics_logger is not None:
       self.metrics_logger.close()
+    if self._trajectory_store is not None:
+      self._trajectory_store.close()
 
   async def _wait_for_dispatch_window(self) -> None:
     """Applies policy-staleness backpressure utilizing token buckets."""
