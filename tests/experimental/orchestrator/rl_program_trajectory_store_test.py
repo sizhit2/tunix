@@ -12,19 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for StandardRLProgram's Trajectory Store construction and shutdown."""
+"""Tests for StandardRLProgram's (non-owning) use of a Trajectory Store."""
 
-import tempfile
 from unittest import mock
 
 from absl.testing import absltest
-from etils import epath
 from tunix.experimental.orchestrator import algorithm_adapter
 from tunix.experimental.orchestrator import batch_assembly
 from tunix.experimental.orchestrator import rl_program
-from tunix.experimental.trajectory import config as trajectory_config_lib
-from tunix.experimental.trajectory import file_store
-from tunix.experimental.trajectory import trajectory_testing
+from tunix.experimental.trajectory import in_memory_store
 
 
 class StandardRLProgramTrajectoryStoreTest(absltest.TestCase):
@@ -48,51 +44,27 @@ class StandardRLProgramTrajectoryStoreTest(absltest.TestCase):
         **kwargs,
     )
 
-  def test_no_trajectory_store_config_means_no_store(self):
+  def test_no_trajectory_store_by_default(self):
     program = self._create_program()
     self.assertIsNone(program._trajectory_store)  # pylint: disable=protected-access
     program.close()
 
-  def test_disabled_trajectory_store_config_means_no_store(self):
-    program = self._create_program(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=False
-        )
-    )
-    self.assertIsNone(program._trajectory_store)  # pylint: disable=protected-access
+  def test_holds_the_instance_it_was_given(self):
+    # The program never builds its own store — it only ever holds whatever
+    # instance its owner (a ClusterOrchestrator) hands it.
+    store = in_memory_store.InMemoryTrajectoryStore()
+    program = self._create_program(trajectory_store=store)
+    self.assertIs(program._trajectory_store, store)  # pylint: disable=protected-access
     program.close()
 
-  def test_enabled_file_backend_builds_store_once(self):
-    tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
-    program = self._create_program(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="orchestrator_run",
-        )
-    )
-    self.assertIsInstance(
-        program._trajectory_store, file_store.FileTrajectoryStore  # pylint: disable=protected-access
-    )
+  def test_close_does_not_close_an_injected_store(self):
+    # StandardRLProgram does not own the store's lifecycle: closing it here
+    # would break a ClusterOrchestrator that runs a second program against
+    # the same store afterwards.
+    store = mock.MagicMock(spec=in_memory_store.InMemoryTrajectoryStore)
+    program = self._create_program(trajectory_store=store)
     program.close()
-
-  def test_close_closes_the_store(self):
-    tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
-    program = self._create_program(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="orchestrator_run",
-        )
-    )
-    store = program._trajectory_store  # pylint: disable=protected-access
-    program.close()
-    with self.assertRaises(RuntimeError):
-      store.add_step(
-          trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1
-      )
+    store.close.assert_not_called()
 
   def test_close_without_a_store_does_not_raise(self):
     program = self._create_program()

@@ -34,6 +34,8 @@ from tunix.experimental.orchestrator import lifecycle
 from tunix.experimental.orchestrator import rl_program
 from tunix.experimental.orchestrator import startup_validation
 from tunix.experimental.orchestrator import worker_registry
+from tunix.experimental.trajectory import config as trajectory_config_lib
+from tunix.experimental.trajectory import factory as trajectory_factory
 from tunix.experimental.worker import abstract_worker
 from tunix.experimental.worker import remote_execution
 
@@ -49,6 +51,9 @@ class ClusterOrchestrator:
       lifecycle_driver: lifecycle.LifecycleDriver | None = None,
       monitor: health_monitor.HealthMonitor | None = None,
       weight_sync_coordinator: Any = None,
+      trajectory_store_config: (
+          trajectory_config_lib.TrajectoryStoreConfig | None
+      ) = None,
   ):
     """Initializes ClusterOrchestrator."""
     self.config = config
@@ -66,6 +71,17 @@ class ClusterOrchestrator:
     self._remote_worker_infos: dict[str, datatypes.WorkerInfo] = {}
     self.engine: distributed_rl_engine.DistributedRLEngine | None = None
     self._weight_sync_coordinator = weight_sync_coordinator
+    # The sole construction site for this process's Trajectory Store: one
+    # ClusterOrchestrator exists per orchestrator process, so building it
+    # here — once, in __init__ — is the whole guard. Its lifetime is meant
+    # to span the process, not any one run_program() call, so it is public
+    # (`self.trajectory_store`, not `_trajectory_store`) for a caller to
+    # thread into whatever RLProgram it constructs; see run() below for the
+    # Tier 1 case, and StandardRLProgram's `trajectory_store` argument for
+    # Tier 3.
+    self.trajectory_store = trajectory_factory.build_trajectory_store(
+        trajectory_store_config
+    )
 
   def __enter__(self) -> "ClusterOrchestrator":
     """Interactive context manager bring-up."""
@@ -152,6 +168,8 @@ class ClusterOrchestrator:
     self.monitor.close()
     self._shutdown_remote_workers()
     self.lifecycle_driver.shutdown()
+    if self.trajectory_store is not None:
+      self.trajectory_store.close()
 
   def validate_startup(self, alg_config: Any, training_config: Any) -> None:
     """Validates cluster geometry against configurations."""
@@ -282,6 +300,7 @@ class ClusterOrchestrator:
         assembler=active_assembler,
         metrics_logging_options=metrics_logging_options,
         metrics_prefix=metrics_prefix,
+        trajectory_store=self.trajectory_store,
     )
     try:
       self.run_program(

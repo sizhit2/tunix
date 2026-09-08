@@ -33,8 +33,7 @@ from tunix.experimental.orchestrator import algorithm_adapter
 from tunix.experimental.orchestrator import batch_assembly
 from tunix.experimental.orchestrator import rl_engine_interface
 from tunix.experimental.queue_manager import trajectory_queue_manager
-from tunix.experimental.trajectory import config as trajectory_config_lib
-from tunix.experimental.trajectory import factory as trajectory_factory
+from tunix.experimental.trajectory import store as trajectory_store_lib
 from tunix.rl import common as rl_common
 from tunix.sft import metrics_logger as metrics_logger_lib
 
@@ -107,8 +106,10 @@ class StandardRLProgram(RLProgram):
       max_staleness: int = 0,
       sync_weights: bool = True,
       metrics_logging_options: MetricsLoggerOptions | None = None,
-      trajectory_store_config: (
-          trajectory_config_lib.TrajectoryStoreConfig | None
+      trajectory_store: (
+          trajectory_store_lib.TrajectoryReader
+          | trajectory_store_lib.TrajectoryWriter
+          | None
       ) = None,
       metrics_prefix: str = "",
       mode: Mode | str = Mode.TRAIN,
@@ -131,12 +132,12 @@ class StandardRLProgram(RLProgram):
     self.max_staleness = max_staleness
     self.sync_weights = sync_weights
     self.metrics_logger: MetricsLogger = MetricsLogger(metrics_logging_options)
-    # Built at most once per process: this __init__ runs exactly once per
-    # StandardRLProgram instance, so there is no separate guard against
-    # constructing the store twice. See trajectory/factory.py.
-    self._trajectory_store = trajectory_factory.build_trajectory_store(
-        trajectory_store_config
-    )
+    # Received, not built: the orchestrator running this program owns the
+    # Trajectory Store's construction and lifecycle (ClusterOrchestrator, one
+    # per process), since a store's lifetime should span the whole
+    # orchestrator process rather than just one program run. This program
+    # only uses it; close() below does not close it.
+    self._trajectory_store = trajectory_store
     self.metrics_prefix = metrics_prefix
     self.mode = mode if isinstance(mode, Mode) else Mode(mode)
     self.on_step_begin = on_step_begin
@@ -155,11 +156,14 @@ class StandardRLProgram(RLProgram):
     )
 
   def close(self) -> None:
-    """Flushes and closes the metrics logger and associated resources."""
+    """Flushes and closes the metrics logger and associated resources.
+
+    Does not close `self._trajectory_store`: this program does not own it
+    (see `__init__`), and closing a store the orchestrator may still be
+    using — e.g. across a second `run_program()` call — would be wrong.
+    """
     if self.metrics_logger is not None:
       self.metrics_logger.close()
-    if self._trajectory_store is not None:
-      self._trajectory_store.close()
 
   async def _wait_for_dispatch_window(self) -> None:
     """Applies policy-staleness backpressure utilizing token buckets."""
