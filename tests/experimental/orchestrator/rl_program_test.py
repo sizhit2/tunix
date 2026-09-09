@@ -2201,6 +2201,116 @@ class RLProgramTest(absltest.TestCase):
 
     asyncio.run(_run())
 
+  def test_generation_length_uses_completion_mask(self):
+    # A parser can append masked formatting tokens to completion_tokens; the
+    # generation/* lengths must count only mask-marked generated tokens, while
+    # rollout/completion_length_mean keeps the raw token count.
+    async def _run():
+      def _payload():
+        return datatypes.RLTrainerPayload(
+            prompt_ids=np.arange(2, dtype=np.int32),
+            prompt_mask=np.ones(2, dtype=np.float32),
+            completion_ids=np.arange(3, dtype=np.int32),
+            completion_mask=np.array([1, 1, 0], dtype=np.float32),
+            advantages=np.ones(3, dtype=np.float32),
+        )
+
+      items = []
+      for gi in range(2):
+        item = datatypes.TrajectoryItem(
+            group_index=gi,
+            prompt_id="prompt_0",
+            start_step=0,
+            prompt_tokens=np.array([1, 2], dtype=np.int32),
+            completion_tokens=np.array([3, 4, 5], dtype=np.int32),
+            traj=datatypes.Trajectory(reward=1.0),
+        )
+        item.payload = _payload()
+        items.append(item)
+      self.mock_algo.create_trainer_payloads.return_value = [
+          it.payload for it in items
+      ]
+      _set_mock_poll_batches(self.mock_engine, items, [])
+      program = self._create_program(dataset=["prompt_0"], reward_fns=[])
+
+      await program.run_async(self.mock_engine)
+
+      logger = program.metrics_logger
+      self.assertAlmostEqual(
+          logger.get_metric("", "rollout/completion_length_mean", "train"), 3.0
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "generation/completions/mean_length", "train"),
+          2.0,
+      )
+
+    asyncio.run(_run())
+
+  def test_generation_clip_ratio_uses_truncation_status(self):
+    # clip_ratio comes from the trajectory's real truncation status, not from
+    # assistant length vs. the algorithm budget: an explicit generation budget
+    # or environment tokens consuming the agentic budget would otherwise be
+    # misclassified as un-truncated.
+    async def _run():
+      statuses = [
+          datatypes.TrajectoryStatus.MAX_CONTEXT_LIMIT_REACHED,
+          datatypes.TrajectoryStatus.SUCCEEDED,
+      ]
+      items = [
+          datatypes.TrajectoryItem(
+              group_index=gi,
+              prompt_id="prompt_0",
+              start_step=0,
+              prompt_tokens=np.array([1, 2], dtype=np.int32),
+              completion_tokens=np.array([3, 4], dtype=np.int32),
+              traj=datatypes.Trajectory(reward=1.0, status=st),
+          )
+          for gi, st in enumerate(statuses)
+      ]
+      _set_mock_poll_batches(self.mock_engine, items, [])
+      program = self._create_program(dataset=["prompt_0"], reward_fns=[])
+
+      await program.run_async(self.mock_engine)
+
+      logger = program.metrics_logger
+      self.assertAlmostEqual(
+          logger.get_metric("", "generation/completions/clip_ratio", "train"),
+          0.5,
+      )
+
+    asyncio.run(_run())
+
+  def test_generation_clip_ratio_omitted_without_status(self):
+    # Without any trajectory status there is no truncation signal, so
+    # clip_ratio is omitted (mirroring rollout/success_rate) rather than
+    # reported as a misleading constant; lengths are still reported.
+    async def _run():
+      items = [
+          datatypes.TrajectoryItem(
+              group_index=gi,
+              prompt_id="prompt_0",
+              start_step=0,
+              prompt_tokens=np.array([1, 2], dtype=np.int32),
+              completion_tokens=np.array([3, 4], dtype=np.int32),
+              traj=datatypes.Trajectory(reward=1.0, status=None),
+          )
+          for gi in range(2)
+      ]
+      _set_mock_poll_batches(self.mock_engine, items, [])
+      program = self._create_program(dataset=["prompt_0"], reward_fns=[])
+
+      await program.run_async(self.mock_engine)
+
+      logger = program.metrics_logger
+      self.assertFalse(
+          logger.metric_exists("", "generation/completions/clip_ratio", "train")
+      )
+      self.assertTrue(
+          logger.metric_exists("", "generation/completions/mean_length", "train")
+      )
+
+    asyncio.run(_run())
+
   def test_rollouts_without_status_omits_success_rate(self):
     async def _run():
       traj_item_0 = datatypes.TrajectoryItem(

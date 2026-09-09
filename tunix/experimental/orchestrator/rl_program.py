@@ -374,9 +374,11 @@ class StandardRLProgram(RLProgram):
     # --- 1. Rollout metrics & Ingestion Staleness ---
     prompt_lengths = []
     completion_lengths = []
+    gen_completion_lengths = []
     total_lengths = []
     turns_list = []
     successes = []
+    truncated_flags = []
     staleness_list = []
     for item in all_step_items:
       p_len = None
@@ -414,6 +416,22 @@ class StandardRLProgram(RLProgram):
       if p_len is not None and c_len is not None:
         total_lengths.append(p_len + c_len)
 
+      # Mask-based completion length for generation/*: counts only positions
+      # the completion/action mask marks as generated, so masked formatting
+      # tokens (e.g. a parser-appended newline) are excluded, matching the
+      # agentic learner's generation metrics. rollout/* keeps the raw length.
+      gen_c_len = None
+      payload = getattr(item, "payload", None)
+      for mask_name in ("completion_mask", "action_mask", "loss_mask"):
+        mask = getattr(payload, mask_name, None) if payload is not None else None
+        if mask is not None:
+          gen_c_len = int(np.sum(np.asarray(mask) > 0))
+          break
+      if gen_c_len is None and completion_tokens is not None:
+        gen_c_len = len(completion_tokens)
+      if gen_c_len is not None:
+        gen_completion_lengths.append(gen_c_len)
+
       traj = getattr(item, "traj", None)
       steps = getattr(traj, "steps", None) if traj else None
       if steps and len(steps) > 0:
@@ -427,11 +445,19 @@ class StandardRLProgram(RLProgram):
           if status != datatypes.TrajectoryStatus.RUNNING:
             is_succ = status == datatypes.TrajectoryStatus.SUCCEEDED
             successes.append(1.0 if is_succ else 0.0)
+            truncated_flags.append(
+                1.0
+                if status == datatypes.TrajectoryStatus.MAX_CONTEXT_LIMIT_REACHED
+                else 0.0
+            )
         elif isinstance(status, str):
           status_str = status.upper()
           if status_str != "RUNNING":
             is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
             successes.append(1.0 if is_succ else 0.0)
+            truncated_flags.append(
+                1.0 if status_str == "MAX_CONTEXT_LIMIT_REACHED" else 0.0
+            )
 
       # Batch ingestion staleness: consumed_policy_version - item.policy_version
       pol_ver = getattr(item, "policy_version", None)
@@ -488,20 +514,13 @@ class StandardRLProgram(RLProgram):
             self.mode,
             log_step,
         )
-    if completion_lengths:
-      cl = np.asarray(completion_lengths, dtype=np.float32)
-      completion_stats = [
+    if gen_completion_lengths:
+      cl = np.asarray(gen_completion_lengths, dtype=np.float32)
+      for tag, val in (
           ("mean_length", float(cl.mean())),
           ("max_length", float(cl.max())),
           ("min_length", float(cl.min())),
-      ]
-      # clip_ratio: fraction of completions truncated at the response budget.
-      max_response_length = getattr(self.algo, "max_response_length", None)
-      if isinstance(max_response_length, (int, float)) and max_response_length > 0:
-        completion_stats.append(
-            ("clip_ratio", float(np.mean(cl >= float(max_response_length))))
-        )
-      for tag, val in completion_stats:
+      ):
         self.metrics_logger.log(
             self.metrics_prefix,
             f"generation/completions/{tag}",
@@ -509,6 +528,19 @@ class StandardRLProgram(RLProgram):
             self.mode,
             log_step,
         )
+    # clip_ratio: fraction of trajectories that hit the context limit, taken
+    # from the trajectory's real status rather than inferred from assistant
+    # length vs. the algorithm budget (which misses an explicit generation
+    # budget and environment tokens consuming the agentic response budget).
+    # Only emitted when statuses are present, like rollout/success_rate.
+    if truncated_flags:
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "generation/completions/clip_ratio",
+          float(np.mean(truncated_flags)),
+          self.mode,
+          log_step,
+      )
 
     if turns_list:
       self.metrics_logger.log(
