@@ -106,11 +106,24 @@ def _response_to_trajectory_item(resp: Any) -> datatypes.TrajectoryItem:
             if isinstance(seg, datatypes.TokenSegment)
             else seg_any.get("logps")
         )
-        assistant_logps.append(
-            np.asarray(seg_logps, dtype=np.float32)
-            if seg_logps is not None
-            else None
-        )
+        # Defensive: the rollout worker is a separate process, so validate its
+        # per-token logps before they can reach the importance ratio. Drop them
+        # (-> None, which makes the whole item fall back to the on-policy
+        # ratio=1 path) when a segment's logps are missing, length-misaligned to
+        # its own tokens, or non-finite. A per-segment length mismatch can still
+        # sum to the right completion length and slip past the adapter's total-
+        # length check, silently misaligning old_per_token_logps to the tokens;
+        # non-finite logps would turn exp(logp - old) into NaN and corrupt the
+        # whole run. Either way we prefer the safe on-policy fallback.
+        seg_logps_arr = None
+        if seg_logps is not None:
+          seg_logps_arr = np.asarray(seg_logps, dtype=np.float32)
+          if (
+              seg_logps_arr.shape != token_arr.shape
+              or not np.isfinite(seg_logps_arr).all()
+          ):
+            seg_logps_arr = None
+        assistant_logps.append(seg_logps_arr)
 
     if assistant_tokens:
       item.completion_tokens = np.concatenate(assistant_tokens)
