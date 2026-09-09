@@ -579,13 +579,16 @@ class StandardRLProgram(RLProgram):
     }
 
   async def _flush_final_trainer_metrics(self) -> None:
-    """Drains the trainer's double-buffered final training step.
+    """Drains and logs the trainer's double-buffered final training step.
 
     _write_train_metrics() writes the *previous* step and parks the current
     one, so when train_stage's loop exits the last step's loss/grad are still
     buffered and would never be pulled. Ask the trainer to flush and log the
-    returned metrics at the final step. Best effort: a metrics drain must
-    never fail the run.
+    returned metrics at that step's own id.
+
+    Best effort end to end: neither the remote drain nor the local logging may
+    fail a run whose training already completed, so the whole path sits inside
+    one exception boundary.
     """
     if self.mode != Mode.TRAIN or self.engine is None:
       return
@@ -594,14 +597,27 @@ class StandardRLProgram(RLProgram):
       return
     try:
       final_metrics = await flush(role=datatypes.Role.ACTOR)
+      if isinstance(final_metrics, (list, tuple)):
+        final_metrics = final_metrics[0] if final_metrics else None
+      if final_metrics is None:
+        return
+      # Log at the drained buffer's own step id, not self._step: a trailing
+      # partial accumulation group advances _step without an optimizer update,
+      # so _step can be one ahead of the trainer's completed steps. id < 0 is
+      # the trainer's empty-buffer sentinel (nothing was parked).
+      if isinstance(final_metrics, dict):
+        final_step = final_metrics.get("id")
+      else:
+        final_step = getattr(final_metrics, "id", None)
+      try:
+        final_step = int(final_step)
+      except (TypeError, ValueError):
+        final_step = self._step
+      if final_step < 0:
+        return
+      self._log_trainer_metrics(final_metrics, final_step)
     except Exception:  # pylint: disable=broad-except
       logging.exception("Final trainer-metrics flush failed; skipping.")
-      return
-    if isinstance(final_metrics, (list, tuple)):
-      final_metrics = final_metrics[0] if final_metrics else None
-    if final_metrics is None:
-      return
-    self._log_trainer_metrics(final_metrics, self._step)
 
   def _log_trainer_metrics(
       self, trainer_metrics: Any, log_step: int
