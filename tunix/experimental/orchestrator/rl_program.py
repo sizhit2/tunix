@@ -468,6 +468,48 @@ class StandardRLProgram(RLProgram):
           self.mode,
           log_step,
       )
+
+    # --- 1b. Generation length distribution ---
+    # Mirrors AgenticGRPOLearner's generation/{prompts,completions}/* keys
+    # (non-experimental tunix/rl/agentic/agentic_grpo_learner.py). The rollout/*
+    # means above stay for backwards compatibility; these add the min/max spread
+    # and completion clip_ratio the mean alone hides.
+    if prompt_lengths:
+      pl = np.asarray(prompt_lengths, dtype=np.float32)
+      for tag, val in (
+          ("mean_length", float(pl.mean())),
+          ("max_length", float(pl.max())),
+          ("min_length", float(pl.min())),
+      ):
+        self.metrics_logger.log(
+            self.metrics_prefix,
+            f"generation/prompts/{tag}",
+            val,
+            self.mode,
+            log_step,
+        )
+    if completion_lengths:
+      cl = np.asarray(completion_lengths, dtype=np.float32)
+      completion_stats = [
+          ("mean_length", float(cl.mean())),
+          ("max_length", float(cl.max())),
+          ("min_length", float(cl.min())),
+      ]
+      # clip_ratio: fraction of completions truncated at the response budget.
+      max_response_length = getattr(self.algo, "max_response_length", None)
+      if isinstance(max_response_length, (int, float)) and max_response_length > 0:
+        completion_stats.append(
+            ("clip_ratio", float(np.mean(cl >= float(max_response_length))))
+        )
+      for tag, val in completion_stats:
+        self.metrics_logger.log(
+            self.metrics_prefix,
+            f"generation/completions/{tag}",
+            val,
+            self.mode,
+            log_step,
+        )
+
     if turns_list:
       self.metrics_logger.log(
           self.metrics_prefix,

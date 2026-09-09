@@ -1772,6 +1772,17 @@ class RLProgramTest(absltest.TestCase):
           logger.get_metric("", "rollout/total_tokens_mean", "train"), 4.0
       )
 
+      # 3b. Generation length distribution under generation/* (mock lengths=2).
+      for scope, expected in (("prompts", 2.0), ("completions", 2.0)):
+        for tag in ("mean_length", "max_length", "min_length"):
+          key = f"generation/{scope}/{tag}"
+          self.assertTrue(
+              logger.metric_exists("", key, "train"), msg=f"{key} missing"
+          )
+          self.assertAlmostEqual(
+              logger.get_metric("", key, "train"), expected
+          )
+
       self.assertTrue(logger.metric_exists("", "rollout/success_rate", "train"))
       self.assertAlmostEqual(
           logger.get_metric("", "rollout/success_rate", "train"), 1.0
