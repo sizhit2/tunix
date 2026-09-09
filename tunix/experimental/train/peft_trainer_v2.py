@@ -1264,6 +1264,18 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     self._written_metrics = None
     return ret
 
+  def flush_metrics(self) -> exp_metrics.MetricsBuffer:
+    """Drains the double-buffered final train step so it is retrievable.
+
+    _write_train_metrics() deliberately writes the *previous* step and parks the
+    current one in _prev_buffered_train_metrics to overlap metric I/O with the
+    next step's compute; close() drains that last step in the single-process
+    loop. A distributed caller that pulls metrics per step needs the same drain
+    or the final step is never emitted. Idempotent when nothing is buffered.
+    """
+    self._write_train_metrics()
+    return self.get_metrics()
+
   def train(
       self,
       train_ds: Iterable[Any],

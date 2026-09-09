@@ -566,6 +566,55 @@ class StandardRLProgram(RLProgram):
       elif step_result is not None:
         trainer_metrics = step_result
 
+    loss_val, perplexity_val = self._log_trainer_metrics(
+        trainer_metrics, log_step
+    )
+    return {
+        "reward_mean": reward_mean,
+        "reward_std": reward_std,
+        "advantage_mean": advantage_mean,
+        "advantage_std": advantage_std,
+        "loss_val": loss_val,
+        "perplexity_val": perplexity_val,
+    }
+
+  async def _flush_final_trainer_metrics(self) -> None:
+    """Drains the trainer's double-buffered final training step.
+
+    _write_train_metrics() writes the *previous* step and parks the current
+    one, so when train_stage's loop exits the last step's loss/grad are still
+    buffered and would never be pulled. Ask the trainer to flush and log the
+    returned metrics at the final step. Best effort: a metrics drain must
+    never fail the run.
+    """
+    if self.mode != Mode.TRAIN or self.engine is None:
+      return
+    flush = getattr(self.engine, "flush_metrics", None)
+    if flush is None:
+      return
+    try:
+      final_metrics = await flush(role=datatypes.Role.ACTOR)
+    except Exception:  # pylint: disable=broad-except
+      logging.exception("Final trainer-metrics flush failed; skipping.")
+      return
+    if isinstance(final_metrics, (list, tuple)):
+      final_metrics = final_metrics[0] if final_metrics else None
+    if final_metrics is None:
+      return
+    self._log_trainer_metrics(final_metrics, self._step)
+
+  def _log_trainer_metrics(
+      self, trainer_metrics: Any, log_step: int
+  ) -> tuple[float | None, float | None]:
+    """Logs one step's trainer scalar metrics (loss, perplexity, lr,
+    grad_norm and any aux) and returns (loss_val, perplexity_val).
+
+    Shared by the per-step collection and the end-of-run flush that drains the
+    trainer's double-buffered final step (see PeftTrainer.flush_metrics); the
+    non-distributed loop performs the same last-step drain in close().
+    """
+    loss_val = None
+    perplexity_val = None
     if trainer_metrics is not None:
       scalar_metrics = {}
       weighted_metrics = {}
@@ -659,14 +708,7 @@ class StandardRLProgram(RLProgram):
               self.metrics_prefix, metric_key, val, self.mode, log_step
           )
 
-    return {
-        "reward_mean": reward_mean,
-        "reward_std": reward_std,
-        "advantage_mean": advantage_mean,
-        "advantage_std": advantage_std,
-        "loss_val": loss_val,
-        "perplexity_val": perplexity_val,
-    }
+    return loss_val, perplexity_val
 
   async def train_stage(self) -> None:
     """Stage 3: Streaming gradient accumulation with RLTrainerPayloads."""
@@ -840,6 +882,12 @@ class StandardRLProgram(RLProgram):
       if self.on_step_end:
         self.on_step_end(current_step, step_result)
       self._step += 1
+
+    # The trainer double-buffers metrics (writes the previous step, parks
+    # the current one to overlap I/O). Once this loop exits the last step
+    # is still parked, so drain it explicitly -- the same last-step flush
+    # close() performs in the non-distributed PeftTrainer loop.
+    await self._flush_final_trainer_metrics()
 
   async def run_async(
       self,
