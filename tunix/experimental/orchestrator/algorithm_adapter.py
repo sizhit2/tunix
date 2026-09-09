@@ -155,6 +155,7 @@ class GRPOAdapter(AlgorithmAdapter):
       loss_agg_mode: str = "sequence-mean-token-mean",
       kl_loss_mode: str = "mse_kl",
       kl_clamp_value: float | None = None,
+      use_rollout_logps: bool = True,  # matches non-exp GRPOConfig default
   ):
     super().__init__(
         group_size=group_size,
@@ -171,6 +172,11 @@ class GRPOAdapter(AlgorithmAdapter):
     self.kl_loss_mode = kl_loss_mode
     self.kl_clamp_value = kl_clamp_value
     self.requires_reference_kl = beta_kl != 0.0
+    # When True, use the rollout sampler logps as old_per_token_logps
+    # (off-policy / sampler-IS -> ratio != 1). When False, old stays None
+    # and grpo_loss_fn pins the ratio to 1 (on-policy), matching the
+    # non-experimental learner's force_on_policy_ratio default.
+    self.use_rollout_logps = use_rollout_logps
 
   def compute_advantages(
       self,
@@ -231,12 +237,28 @@ class GRPOAdapter(AlgorithmAdapter):
           else np.zeros(0, dtype=np.int32)
       )
       seq_adv = np.full(len(c_arr), adv_val, dtype=np.float32)
+      # Behavior-policy (rollout sampler) log-probs from the trajectory. Without
+      # them old_per_token_logps stays None and grpo_loss_fn falls back to
+      # stop_gradient(current logps), pinning the importance ratio to exactly 1
+      # and the surrogate loss to ~0. Passing the sampler logps restores a real
+      # ratio (sampler vs trainer).
+      old_lp = (
+          getattr(item, "old_per_token_logps", None)
+          if self.use_rollout_logps
+          else None
+      )
+      old_lp = (
+          np.asarray(old_lp, dtype=np.float32)
+          if old_lp is not None and len(old_lp) == len(c_arr)
+          else None
+      )
       payload = datatypes.RLTrainerPayload(
           prompt_ids=p_arr,
           prompt_mask=np.ones(len(p_arr), dtype=np.float32),
           completion_ids=c_arr,
           completion_mask=act_arr,
           advantages=seq_adv,
+          old_per_token_logps=old_lp,
           ref_per_token_logps=np.asarray(ref_lp, dtype=np.float32)
           if ref_lp is not None
           else None,

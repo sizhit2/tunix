@@ -62,6 +62,10 @@ class TrajectoryItem:
   prompt_tokens: np.ndarray | None = None
   completion_tokens: np.ndarray | None = None
   action_mask: np.ndarray | None = None
+  # Per-token log-probs of the completion under the ROLLOUT sampling policy
+  # (behavior policy). Carried so the trainer can form a real importance ratio;
+  # None -> grpo_loss_fn falls back to stop_gradient(current logps) i.e. ratio=1.
+  old_per_token_logps: np.ndarray | None = None
   # `[len(prompt_tokens) + len(completion_tokens), num_layers, top_k]` expert
   # ids from the rollout, for replaying its routing during training.
   routed_experts: np.ndarray | None = None
