@@ -1724,6 +1724,18 @@ class RLProgramTest(absltest.TestCase):
       self.assertTrue(logger.metric_exists("", "rewards/sum", "train"))
       self.assertAlmostEqual(logger.get_metric("", "rewards/sum", "train"), 5.0)
 
+      # Solve-rate metrics (mock rewards are 2.5 > 0.1 -> all correct).
+      self.assertTrue(logger.metric_exists("", "rewards/solve_ratio", "train"))
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/solve_ratio", "train"), 1.0
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/solve_all", "train"), 1.0
+      )
+      self.assertAlmostEqual(
+          logger.get_metric("", "rewards/solve_none", "train"), 0.0
+      )
+
       # Advantage Metrics
       self.assertTrue(
           logger.metric_exists("", "rewards/advantage/mean", "train")

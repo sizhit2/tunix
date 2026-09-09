@@ -556,6 +556,27 @@ class StandardRLProgram(RLProgram):
             self.metrics_prefix, f"rewards/{tag}", val, self.mode, log_step
         )
 
+      # Solve-rate metrics, mirroring the non-experimental math example's
+      # vtc_metric_fn (examples/math_gsm8k/qwen3_grpo_demo.py). A reward above
+      # 0.1 marks an answer-correct completion under the graded gsm8k reward
+      # (1.0 correct, 0.5 answer-only, 0.1 format-only, 0.0 wrong), the same
+      # threshold the non-experimental metric uses. solve_ratio is the
+      # correct/incorrect ratio; solve_all/none/partial describe the step batch.
+      rewards_arr = np.asarray(step_rewards, dtype=np.float32)
+      correct = rewards_arr > 0.1
+      solve_stats = {
+          "solve_ratio": float(np.mean(correct)),
+          "solve_all": float(np.all(correct)),
+          "solve_none": float(np.all(np.isclose(rewards_arr, 0.0))),
+      }
+      solve_stats["solve_partial"] = float(
+          not solve_stats["solve_all"] and not solve_stats["solve_none"]
+      )
+      for tag, val in solve_stats.items():
+        self.metrics_logger.log(
+            self.metrics_prefix, f"rewards/{tag}", val, self.mode, log_step
+        )
+
     # --- Advantage Metrics ---
     advantage_mean = float(np.mean(step_advantages)) if step_advantages else 0.0
     advantage_std = float(np.std(step_advantages)) if step_advantages else 0.0
