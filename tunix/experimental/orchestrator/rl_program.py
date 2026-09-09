@@ -583,20 +583,20 @@ class StandardRLProgram(RLProgram):
 
     _write_train_metrics() writes the *previous* step and parks the current
     one, so when train_stage's loop exits the last step's loss/grad are still
-    buffered and would never be pulled. Ask the trainer to flush and log the
-    returned metrics at that step's own id.
+    buffered and would never be pulled. Pull once more with ``flush=True``,
+    which asks the trainer to drain the parked step, and log it at that step's
+    own id.
 
-    Best effort end to end: neither the remote drain nor the local logging may
+    Best effort end to end: neither the remote pull nor the local logging may
     fail a run whose training already completed, so the whole path sits inside
     one exception boundary.
     """
     if self.mode != Mode.TRAIN or self.engine is None:
       return
-    flush = getattr(self.engine, "flush_metrics", None)
-    if flush is None:
-      return
     try:
-      final_metrics = await flush(role=datatypes.Role.ACTOR)
+      final_metrics = await self.engine.get_metrics(
+          role=datatypes.Role.ACTOR, flush=True
+      )
       if isinstance(final_metrics, (list, tuple)):
         final_metrics = final_metrics[0] if final_metrics else None
       if final_metrics is None:

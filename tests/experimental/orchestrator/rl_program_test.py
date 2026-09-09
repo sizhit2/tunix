@@ -202,7 +202,6 @@ class RLProgramTest(absltest.TestCase):
     self.mock_engine.prepare_rollout_policy = mock.AsyncMock(return_value=0)
     self.mock_engine.sync_weights = mock.AsyncMock(return_value=1)
     self.mock_engine.get_metrics = mock.AsyncMock(return_value=None)
-    self.mock_engine.flush_metrics = mock.AsyncMock(return_value=None)
     self.mock_engine.poll_rollouts = mock.AsyncMock(side_effect=_mock_poll)
     self.mock_algo = mock.MagicMock(spec=algorithm_adapter.AlgorithmAdapter)
     self.mock_algo.group_size = 2
@@ -812,8 +811,12 @@ class RLProgramTest(absltest.TestCase):
           self.mock_engine.train_step.call_args_list[0].kwargs["apply_optimizer"]
       )
       # Checkpoint and metrics are executed on the flushed batch
-      self.mock_engine.get_metrics.assert_called_once_with(
-          role=datatypes.Role.ACTOR
+      # Pulled once for the flushed batch, then once more with flush=True to
+      # drain the trainer's parked final step.
+      self.assertEqual(self.mock_engine.get_metrics.await_count, 2)
+      self.mock_engine.get_metrics.assert_any_await(role=datatypes.Role.ACTOR)
+      self.mock_engine.get_metrics.assert_any_await(
+          role=datatypes.Role.ACTOR, flush=True
       )
       self.mock_engine.save_checkpoint.assert_called_once()
       self.assertEqual(program.last_step_result.num_microbatches, 1)
@@ -2209,7 +2212,11 @@ class RLProgramTest(absltest.TestCase):
       flushed = exp_metrics.MetricsBuffer(
           id=7, scalar_metrics={"loss": 0.75}, mode="train"
       )
-      self.mock_engine.flush_metrics = mock.AsyncMock(return_value=flushed)
+      self.mock_engine.get_metrics = mock.AsyncMock(
+          side_effect=lambda role=None, flush=False, **kw: (
+              flushed if flush else None
+          )
+      )
       _set_mock_poll_batches(self.mock_engine, self._make_two_items(), [])
       program = self._create_program(dataset=["prompt_0"], reward_fns=[])
       await program.run_async(self.mock_engine)
@@ -2221,7 +2228,9 @@ class RLProgramTest(absltest.TestCase):
     finally:
       jax.monitoring.clear_event_listeners()
 
-    self.mock_engine.flush_metrics.assert_awaited()
+    self.mock_engine.get_metrics.assert_any_await(
+        role=datatypes.Role.ACTOR, flush=True
+    )
     self.assertNotEqual(program.step, 7)  # the discrepancy the test guards
     loss_steps = [s for n, s in records if n.endswith("trainer/loss")]
     self.assertIn(7, loss_steps)
@@ -2231,8 +2240,10 @@ class RLProgramTest(absltest.TestCase):
     # A trainer with nothing parked returns the empty buffer (id=-1); nothing
     # must be logged for it.
     async def _run():
-      self.mock_engine.flush_metrics = mock.AsyncMock(
-          return_value=exp_metrics.MetricsBuffer(id=-1)
+      self.mock_engine.get_metrics = mock.AsyncMock(
+          side_effect=lambda role=None, flush=False, **kw: (
+              exp_metrics.MetricsBuffer(id=-1) if flush else None
+          )
       )
       _set_mock_poll_batches(self.mock_engine, self._make_two_items(), [])
       program = self._create_program(dataset=["prompt_0"], reward_fns=[])
@@ -2252,7 +2263,11 @@ class RLProgramTest(absltest.TestCase):
       flushed = exp_metrics.MetricsBuffer(
           id=1, scalar_metrics={"loss": 0.5}, mode="train"
       )
-      self.mock_engine.flush_metrics = mock.AsyncMock(return_value=flushed)
+      self.mock_engine.get_metrics = mock.AsyncMock(
+          side_effect=lambda role=None, flush=False, **kw: (
+              flushed if flush else None
+          )
+      )
       _set_mock_poll_batches(self.mock_engine, self._make_two_items(), [])
       program = self._create_program(dataset=["prompt_0"], reward_fns=[])
       original = program._log_trainer_metrics
@@ -2269,7 +2284,9 @@ class RLProgramTest(absltest.TestCase):
       return program
 
     program = asyncio.run(_run())
-    self.mock_engine.flush_metrics.assert_awaited()
+    self.mock_engine.get_metrics.assert_any_await(
+        role=datatypes.Role.ACTOR, flush=True
+    )
     self.assertEqual(program.step, 1)
 
   def test_rollouts_without_status_omits_success_rate(self):

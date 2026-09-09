@@ -278,16 +278,15 @@ class TrainerWorker(abstract_worker.Worker):
       self.state = WorkerState.READY
     return result
 
-  def get_metrics(self) -> Any:
-    """Returns and clears the recently collected step metric records."""
-    return self._trainer.get_metrics()
+  def get_metrics(self, flush: bool = False) -> Any:
+    """Returns and clears the recently collected step metric records.
 
-  def flush_metrics(self) -> Any:
-    """Drains the trainer's final buffered step (see PeftTrainer.flush_metrics).
-
-    Falls back to get_metrics() for trainer backends that do not double-buffer.
+    With ``flush=True`` the trainer first drains its double-buffered final
+    completed step (see PeftTrainer.flush_metrics) so an end-of-run pull can
+    retrieve it; trainer backends without that method are read as-is.
     """
-    flush = getattr(self._trainer, "flush_metrics", None)
-    if flush is None:
-      return self._trainer.get_metrics()
-    return flush()
+    if flush:
+      drain = getattr(self._trainer, "flush_metrics", None)
+      if drain is not None:
+        return drain()
+    return self._trainer.get_metrics()
