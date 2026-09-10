@@ -41,7 +41,7 @@ RUN bash scripts/install_tunix_vllm_requirement.sh
 # Copy pyproject.toml and README.md to install dependencies first
 COPY pyproject.toml README.md /app/
 RUN mkdir /app/tunix && touch /app/tunix/__init__.py
-RUN uv pip install .
+RUN uv pip install ".[otel]"
 
 # Install SFT/MaxText dependencies (unconditional)
 RUN uv pip install --upgrade flax && \
