@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from absl.testing import absltest
+import dataclasses
 import numpy as np
 from tunix.experimental.common import datatypes
 from tunix.experimental.orchestrator import algorithm_adapter
@@ -52,7 +53,7 @@ class AlgorithmAdapterTest(absltest.TestCase):
       algorithm_adapter.GRPOAdapter(group_size=0)
 
   def test_grpo_create_trainer_payloads(self):
-    adapter = algorithm_adapter.GRPOAdapter(group_size=2)
+    adapter = algorithm_adapter.GRPOAdapter(group_size=2, use_rollout_logps=False)
     item1 = datatypes.TrajectoryItem(
         group_index=0,
         prompt_id="g1",
@@ -116,14 +117,36 @@ class AlgorithmAdapterTest(absltest.TestCase):
         old_per_token_logps=None,
     )
 
+    # Presence of old_per_token_logps is decided per adapter, never per row:
+    # a row without logps under use_rollout_logps=True is an error rather than
+    # a silently different payload structure (which would force a recompile).
+    with self.assertRaisesRegex(ValueError, "carries no per-token logps"):
+      adapter.create_trainer_payloads([item1, item2], rewards=[1.0, 2.0])
+
+    item2_with_logps = dataclasses.replace(
+        item2, old_per_token_logps=np.array([-0.1, -0.4], dtype=np.float32)
+    )
     payloads = adapter.create_trainer_payloads(
-        [item1, item2], rewards=[1.0, 2.0]
+        [item1, item2_with_logps], rewards=[1.0, 2.0]
     )
     self.assertLen(payloads, 2)
     np.testing.assert_allclose(
         payloads[0].old_per_token_logps,
         np.array([-0.5, -0.2], dtype=np.float32),
     )
+    np.testing.assert_allclose(
+        payloads[1].old_per_token_logps,
+        np.array([-0.1, -0.4], dtype=np.float32),
+    )
+
+    # force_on_policy_ratio never emits the field, even when rows carry logps.
+    pinned = algorithm_adapter.GRPOAdapter(
+        group_size=2, force_on_policy_ratio=True
+    )
+    payloads = pinned.create_trainer_payloads(
+        [item1, item2_with_logps], rewards=[1.0, 2.0]
+    )
+    self.assertIsNone(payloads[0].old_per_token_logps)
     self.assertIsNone(payloads[1].old_per_token_logps)
 
   def test_grpo_create_trainer_payloads_with_disabled_rollout_logps(self):
@@ -179,15 +202,12 @@ class AlgorithmAdapterTest(absltest.TestCase):
         action_mask=np.array([1, 1], dtype=np.float32),
         old_per_token_logps=np.array([-0.3, -0.4], dtype=np.float32),
     )
-    payloads = adapter.create_trainer_payloads(
-        [item1, item2], rewards=[1.0, 2.0]
-    )
-    self.assertLen(payloads, 2)
-    self.assertIsNone(payloads[0].old_per_token_logps)
-    np.testing.assert_allclose(
-        payloads[1].old_per_token_logps,
-        np.array([-0.3, -0.4], dtype=np.float32),
-    )
+    # A logps row that does not line up with its completion is a sampler bug;
+    # dropping it would change the payload structure, so it is rejected.
+    with self.assertRaisesRegex(
+        ValueError, "carries 3 per-token logps for 2 completion tokens"
+    ):
+      adapter.create_trainer_payloads([item1, item2], rewards=[1.0, 2.0])
 
   def test_ppo_advantages_and_trainer_payloads(self):
     adapter = algorithm_adapter.PPOAdapter(group_size=2, gamma=0.99, lam=0.95)
@@ -301,7 +321,7 @@ class AlgorithmAdapterTest(absltest.TestCase):
     self.assertEqual(algo_config.lam, 0.92)
 
   def test_grpo_with_ref_logps(self):
-    adapter = algorithm_adapter.GRPOAdapter(group_size=2)
+    adapter = algorithm_adapter.GRPOAdapter(group_size=2, use_rollout_logps=False)
     item1 = datatypes.TrajectoryItem(
         group_index=0,
         prompt_id="g1",
@@ -357,7 +377,7 @@ class AlgorithmAdapterTest(absltest.TestCase):
 
   def test_empty_tokens_handling(self):
     for adapter in [
-        algorithm_adapter.GRPOAdapter(group_size=2),
+        algorithm_adapter.GRPOAdapter(group_size=2, use_rollout_logps=False),
         algorithm_adapter.PPOAdapter(group_size=1),
     ]:
       g = adapter.group_size
