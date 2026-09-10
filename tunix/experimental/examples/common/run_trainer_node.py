@@ -60,10 +60,24 @@ def _build_actor_optimizer(args):
   optimizer config (opt_type / schedule / b1 / b2 / weight_decay /
   max_grad_norm) matching optimizer creation in cli.
   """
+  # With --warmup_steps / --lr_decay_steps this is the schedule
+  # examples/math_gsm8k/qwen3_grpo_demo.py::create_optimizer uses
+  # (warmup_cosine_decay 0 -> peak -> 0); without them the LR is constant.
+  if args.warmup_steps or args.lr_decay_steps:
+    learning_rate = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=args.learning_rate,
+        warmup_steps=args.warmup_steps,
+        decay_steps=max(args.lr_decay_steps, args.warmup_steps + 1),
+        end_value=0.0,
+    )
+  else:
+    learning_rate = args.learning_rate
   adamw = optax.adamw(
-      learning_rate=args.learning_rate,
+      learning_rate=learning_rate,
       b1=args.adam_b1,
       b2=args.adam_b2,
+      eps=args.adam_eps,
       weight_decay=args.weight_decay,
   )
   if args.max_grad_norm is not None:
@@ -101,6 +115,45 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument("--adam_b1", type=float, default=0.9)
   parser.add_argument("--adam_b2", type=float, default=0.999)
   parser.add_argument("--weight_decay", type=float, default=0.0)
+  parser.add_argument(
+      "--adam_eps", type=float, default=1e-8, help="AdamW epsilon."
+  )
+  parser.add_argument(
+      "--warmup_steps",
+      type=int,
+      default=0,
+      help=(
+          "Linear LR warmup steps. With --lr_decay_steps this enables the"
+          " warmup_cosine_decay schedule of examples/math_gsm8k/"
+          "qwen3_grpo_demo.py (0 -> learning_rate -> 0); 0 keeps a constant LR."
+      ),
+  )
+  parser.add_argument(
+      "--lr_decay_steps",
+      type=int,
+      default=0,
+      help="Total steps of the cosine decay (see --warmup_steps).",
+  )
+  parser.add_argument(
+      "--model_dtype",
+      type=str,
+      default="bfloat16",
+      help=(
+          "Parameter dtype the trainer loads the model as. float32 keeps fp32"
+          " master weights like the non-experimental demo's actor; pair it with"
+          " --weight_sync_dtype=bfloat16 when the rollout serves bf16."
+      ),
+  )
+  parser.add_argument(
+      "--weight_sync_dtype",
+      type=str,
+      default="",
+      help=(
+          "dtype the weights are cast to before binding to the weight-sync"
+          " transport (must match the rollout's parameter dtype). Empty binds"
+          " the live weights unchanged."
+      ),
+  )
   parser.add_argument("--use_lora", action="store_true")
   parser.add_argument("--lora_rank", type=int, default=64)
   parser.add_argument("--lora_alpha", type=float, default=64.0)
@@ -255,7 +308,9 @@ def _load_actor_model(args, mesh: Mesh, *, lora: bool):
         "--model_dir is required for JAX trainer weights. Set MODEL_DIR or pass"
         " --model_dir=/path/to/local/safetensors."
     )
-  model = models.create_model(args.model_name, args.model_dir, mesh)
+  model = models.create_model(
+      args.model_name, args.model_dir, mesh, dtype=args.model_dtype
+  )
   if not lora:
     return model
   lora_config = {
@@ -400,6 +455,7 @@ def _create_tunix_trainer_factory(args) -> Any:
       # Orchestrator needs to realign its step/policy_version from the returned
       # metadata.
       resume_from_checkpoint_on_init=False,
+      weight_sync_dtype=args.weight_sync_dtype or None,
   )
   logging.info(
       "PeftTrainer v2 gradient_accumulation_steps=%d.",

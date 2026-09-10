@@ -53,13 +53,22 @@ def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
   return config
 
 
-def create_model(model_name: str, model_dir: str, mesh: Mesh):
+def create_model(
+    model_name: str,
+    model_dir: str,
+    mesh: Mesh,
+    dtype: jnp.dtype = jnp.bfloat16,
+):
   """Builds the demo model on the given mesh.
 
   Args:
     model_name: Demo model selector, e.g. "gemma-2-2b" or "Qwen3-1.7B".
     model_dir: Directory holding the safetensors shards.
     mesh: Device mesh the parameters are sharded over.
+    dtype: Parameter dtype the safetensors are loaded as. The rollout serves
+      bf16; the trainer may load fp32 master weights (as
+      examples/math_gsm8k/qwen3_grpo_demo.py does for the actor) and bind a
+      bf16 copy for weight sync via `TrainingConfig.weight_sync_dtype`.
 
   Returns:
     An nnx module ready for training or serving.
@@ -71,6 +80,6 @@ def create_model(model_name: str, model_dir: str, mesh: Mesh):
     )
   if "qwen3" in normalized:
     return qwen3_params_lib.create_model_from_safe_tensors(
-        model_dir, _qwen3_config(model_name), mesh, dtype=jnp.bfloat16
+        model_dir, _qwen3_config(model_name), mesh, dtype=jnp.dtype(dtype)
     )
   raise ValueError(f"Unsupported demo model_name: {model_name!r}")

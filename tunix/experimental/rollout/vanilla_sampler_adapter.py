@@ -56,9 +56,20 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
       model: Any = None,
       config: Any = None,
       raiden_sync_delegate: Any = None,
+      eos_tokens: Sequence[int] | None = None,
       **kwargs,
   ):
+    """See class docstring.
+
+    Args:
+      eos_tokens: Token ids that end a generation. Defaults to the tokenizer's
+        single eos id; pass the model's full stop set (e.g. Qwen3's
+        generation_config `[<|im_end|>, <|endoftext|>]`, which vLLM honours by
+        default) so a raw-text prompt that the model finishes with
+        `<|endoftext|>` stops there instead of running to the length limit.
+    """
     self.server_id = server_id
+    self.eos_tokens = list(eos_tokens) if eos_tokens else None
     self.transformer = transformer if transformer is not None else model
     self.tokenizer = tokenizer
     self.image_processor = image_processor
@@ -270,6 +281,7 @@ class VanillaSamplerAdapter(Sampler, abc.ABC):
         beam_size=beam_size,
         return_logits=return_logits,
         return_logprobs=return_logprobs,
+        eos_tokens=self.eos_tokens,
     )
 
     responses = []

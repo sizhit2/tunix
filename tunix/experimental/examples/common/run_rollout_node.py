@@ -58,6 +58,31 @@ def _import_vllm_sampler():
   return vllm_sampler
 
 
+def _stop_token_ids(tokenizer, model_path: str) -> list[int]:
+  """The model's full stop set: tokenizer eos + generation_config eos ids.
+
+  Qwen3's generation_config lists `[<|im_end|>, <|endoftext|>]`; vLLM stops on
+  both by default, while the tokenizer's single `eos_token_id` is only
+  `<|im_end|>`. A raw-text prompt is typically finished with `<|endoftext|>`,
+  so stopping on the tokenizer eos alone runs every completion to the length
+  limit and the agentic engine clips it without scoring.
+  """
+  ids: list[int] = []
+  if getattr(tokenizer, "eos_token_id", None) is not None:
+    ids.append(int(tokenizer.eos_token_id))
+  try:
+    from transformers import GenerationConfig  # pylint: disable=g-import-not-at-top
+
+    cfg_eos = GenerationConfig.from_pretrained(model_path).eos_token_id
+    for t in cfg_eos if isinstance(cfg_eos, (list, tuple)) else [cfg_eos]:
+      if t is not None and int(t) not in ids:
+        ids.append(int(t))
+  except Exception:  # pylint: disable=broad-exception-caught
+    logging.info("No generation_config eos ids for %s; using tokenizer eos.", model_path)
+  logging.info("Sampler stop token ids: %s", ids)
+  return ids
+
+
 def _chat_parser_for(model_id: str, tokenizer, mode: str = "auto"):
   """Selects the chat parser: `raw` text, or the model family's template.
 
@@ -254,6 +279,7 @@ def _create_vanilla_worker(args, tokenizer):
       tokenizer=tokenizer,
       cache_config=args.max_prompt_length + args.max_response_length,
       config=config,
+      eos_tokens=_stop_token_ids(tokenizer, args.model_dir or args.model_id),
   )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
