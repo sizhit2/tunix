@@ -15,6 +15,7 @@
 
 import collections.abc
 import logging
+import os
 import re
 from typing import Any
 
@@ -184,12 +185,73 @@ def score_gsm8k_completion(
   }
 
 
+def score_gsm8k_completion_cli(
+    completion: str, gold_answer: Any
+) -> tuple[float, dict[str, Any]]:
+  """Scores a completion with the additive reward from tunix/cli/reward_fn/gsm8k.py.
+
+  Sums the same four functions the CLI recipe (qwen3_0.6b.yaml) loads:
+  match_format_exactly [0, 3] + match_format_approximately [-2, 2] +
+  check_answer [-1, 3] + check_numbers [0, 1.5]. Unlike the gated VTC shape
+  above, every term contributes independently, so a completion that omits the
+  opening <reasoning> tag still receives an answer signal and a per-tag format
+  gradient. The info dict keeps the VTC keys so GSM8KEnv can consume it.
+  """
+  from tunix.cli.reward_fn import gsm8k as cli_reward  # pylint: disable=g-import-not-at-top
+
+  answers = [str(gold_answer) if gold_answer is not None else ""]
+  parts = {
+      name: float(fn([""], [completion], answer=answers)[0])
+      for name, fn in (
+          ("format_exact", cli_reward.match_format_exactly),
+          ("format_approx", cli_reward.match_format_approximately),
+          ("answer", cli_reward.check_answer),
+          ("numbers", cli_reward.check_numbers),
+      )
+  }
+  reward = float(sum(parts.values()))
+  match = cli_reward.match_format.search(completion)
+  predicted = normalize_answer(match.group(1)) if match else None
+  info = {
+      "format_correct": parts["format_exact"] > 0,
+      # Same notion as the VTC scorer: the boxed/answer number matches gold.
+      "answer_correct": parts["answer"] >= 3.0 or parts["numbers"] >= 1.5,
+      "extracted_answer": predicted,
+      "gold_answer": normalize_answer(gold_answer),
+      "reward_parts": parts,
+  }
+  # boxed_correct uses the VTC extractor (tag-free \boxed{} fallback) so answer
+  # accuracy stays comparable with runs scored under the default style.
+  boxed = normalize_answer(extract_boxed_answer(completion))
+  boxed_correct = boxed is not None and boxed == info["gold_answer"]
+  logging.info(
+      "GSM8K_SCORE style=cli reward=%.2f format_exact=%d answer_correct=%d"
+      " boxed_correct=%d has_answer_tag=%d has_reasoning_open=%d",
+      reward,
+      int(info["format_correct"]),
+      int(info["answer_correct"]),
+      int(boxed_correct),
+      int(cli_reward.solution_start in completion),
+      int(cli_reward.reasoning_start in completion),
+  )
+  return reward, info
+
+
+# GSM8K_REWARD_STYLE=cli switches both reward entry points (env-side and
+# orchestrator-side) to the additive CLI recipe reward; default keeps the VTC
+# shape. Read at call time so worker processes pick it up from their env.
+def _score(completion: str, gold_answer: Any) -> tuple[float, dict[str, Any]]:
+  if os.environ.get("GSM8K_REWARD_STYLE", "vtc").lower() == "cli":
+    return score_gsm8k_completion_cli(completion, gold_answer)
+  return score_gsm8k_completion(completion, gold_answer)
+
+
 def gsm8k_env_reward(
     task: dict[str, Any], action: Any
 ) -> tuple[float, dict[str, Any]]:
   completion = action.action if hasattr(action, "action") else str(action)
   gold_answer = task.get("answer", task.get("gold_answer"))
-  return score_gsm8k_completion(str(completion), gold_answer)
+  return _score(str(completion), gold_answer)
 
 
 def make_gsm8k_reward_fn(
@@ -201,7 +263,7 @@ def make_gsm8k_reward_fn(
     metadata = dict(getattr(item, "metadata", None) or {})
     text = str(metadata.get("text", ""))
     gold_answer = metadata.get("answer", metadata.get("gold_answer"))
-    reward, _ = score_gsm8k_completion(text, gold_answer)
+    reward, _ = _score(text, gold_answer)
     if debug:
       prompt_id = metadata.get(
           "prompt_id",
