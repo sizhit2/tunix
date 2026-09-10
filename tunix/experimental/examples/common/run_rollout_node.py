@@ -58,8 +58,16 @@ def _import_vllm_sampler():
   return vllm_sampler
 
 
-def _chat_parser_for(model_id: str, tokenizer):
-  """Selects the chat template parser by model family."""
+def _chat_parser_for(model_id: str, tokenizer, mode: str = "auto"):
+  """Selects the chat parser: `raw` text, or the model family's template.
+
+  `raw` applies no template, so a completion-style prompt -- one that ends
+  mid-structure, e.g. with an opened tag the model is meant to close -- is
+  continued verbatim instead of being sealed off inside a user turn by
+  `<|im_end|>` / the assistant header.
+  """
+  if mode == "raw":
+    return chat_parser_lib.RawTextParser(tokenizer)
   name = model_id.lower()
   for family, parser_cls in CHAT_PARSERS.items():
     if family in name:
@@ -112,6 +120,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       help=(
           "Override MaxText inference attention kernel (e.g."
           " vllm_batched_rpa)."
+      ),
+  )
+  parser.add_argument(
+      "--chat_parser",
+      type=str,
+      default=os.getenv("CHAT_PARSER", "auto"),
+      choices=["auto", "raw"],
+      help=(
+          "auto: the model family's chat template parser (Qwen/Llama/Gemma);"
+          " raw: feed message contents verbatim with no template, for"
+          " completion-style prompts the model is meant to continue."
       ),
   )
   parser.add_argument(
@@ -238,7 +257,9 @@ def _create_vanilla_worker(args, tokenizer):
   )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
-  chat_parser = _chat_parser_for(args.model_id or args.model_name, tokenizer)
+  chat_parser = _chat_parser_for(
+      args.model_id or args.model_name, tokenizer, args.chat_parser
+  )
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
       config=config,
@@ -266,7 +287,9 @@ def _create_vllm_worker(args, tokenizer):
     )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
-  chat_parser = _chat_parser_for(args.model_id or args.model_name, tokenizer)
+  chat_parser = _chat_parser_for(
+      args.model_id or args.model_name, tokenizer, args.chat_parser
+  )
   logging.info("Creating RolloutWorker wrapper...")
   return rollout_worker.RolloutWorker(
       worker_id=args.worker_id,
