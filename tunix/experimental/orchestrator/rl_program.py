@@ -348,6 +348,24 @@ class StandardRLProgram(RLProgram):
     finally:
       await self.scored_q.close()
 
+  def _log_metric(self, metric_name: str, value: float, step: int) -> None:
+    """Logs one scalar under the legacy ``{prefix}/{mode}/{name}`` layout.
+
+    Mirrors ``rl_cluster.RLCluster``: the first path segment of
+    ``metric_name`` (``rewards/mean`` -> prefix ``rewards``, name ``mean``)
+    becomes the metrics prefix, so the orchestrator lands on the same W&B /
+    TensorBoard keys as the non-experimental learners (``rewards/train/mean``
+    rather than ``train/rewards/mean``). An explicit ``metrics_prefix`` keeps
+    the full name under that prefix instead.
+    """
+    prefix = self.metrics_prefix
+    if not prefix:
+      if "/" in metric_name:
+        prefix, metric_name = metric_name.split("/", maxsplit=1)
+      else:
+        prefix = "global"
+    self.metrics_logger.log(prefix, metric_name, value, self.mode, step)
+
   def _collect_and_log_step_metrics(
       self,
       *,
@@ -451,43 +469,33 @@ class StandardRLProgram(RLProgram):
         staleness_list.append(float(max(0, consumed_policy_version - pol_ver)))
 
     if prompt_lengths:
-      self.metrics_logger.log(
-          self.metrics_prefix,
-          "rollout/prompt_length_mean",
+      self._log_metric(
+          "generation/prompt_length_mean",
           float(np.mean(prompt_lengths)),
-          self.mode,
           log_step,
       )
     if completion_lengths:
-      self.metrics_logger.log(
-          self.metrics_prefix,
-          "rollout/completion_length_mean",
+      self._log_metric(
+          "generation/completion_length_mean",
           float(np.mean(completion_lengths)),
-          self.mode,
           log_step,
       )
     if total_lengths:
-      self.metrics_logger.log(
-          self.metrics_prefix,
-          "rollout/total_tokens_mean",
+      self._log_metric(
+          "generation/total_tokens_mean",
           float(np.mean(total_lengths)),
-          self.mode,
           log_step,
       )
     if turns_list:
-      self.metrics_logger.log(
-          self.metrics_prefix,
-          "rollout/num_turns_mean",
+      self._log_metric(
+          "generation/num_turns_mean",
           float(np.mean(turns_list)),
-          self.mode,
           log_step,
       )
     if successes:
-      self.metrics_logger.log(
-          self.metrics_prefix,
-          "rollout/success_rate",
+      self._log_metric(
+          "generation/success_rate",
           float(np.mean(successes)),
-          self.mode,
           log_step,
       )
     if staleness_list:
@@ -497,9 +505,7 @@ class StandardRLProgram(RLProgram):
           "staleness_min": float(np.min(staleness_list)),
       }
       for tag, val in staleness_stats.items():
-        self.metrics_logger.log(
-            self.metrics_prefix, f"rollout/{tag}", val, self.mode, log_step
-        )
+        self._log_metric(f"generation/{tag}", val, log_step)
 
     # --- 2. Reward Metrics ---
     reward_mean = float(np.mean(step_rewards)) if step_rewards else 0.0
@@ -516,9 +522,7 @@ class StandardRLProgram(RLProgram):
           "sum": reward_sum,
       }
       for tag, val in reward_stats.items():
-        self.metrics_logger.log(
-            self.metrics_prefix, f"rewards/{tag}", val, self.mode, log_step
-        )
+        self._log_metric(f"rewards/{tag}", val, log_step)
 
     # --- Advantage Metrics ---
     advantage_mean = float(np.mean(step_advantages)) if step_advantages else 0.0
@@ -543,13 +547,7 @@ class StandardRLProgram(RLProgram):
           "nonzero_frac": advantage_nonzero_frac,
       }
       for tag, val in advantage_stats.items():
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            f"rewards/advantage/{tag}",
-            val,
-            self.mode,
-            log_step,
-        )
+        self._log_metric(f"rewards/advantage/{tag}", val, log_step)
 
     # --- 3. Orchestrator Metrics ---
     orchestrator_stats = {
@@ -559,9 +557,7 @@ class StandardRLProgram(RLProgram):
         "step_time_sec": float(step_time_sec),
     }
     for tag, val in orchestrator_stats.items():
-      self.metrics_logger.log(
-          self.metrics_prefix, f"orchestrator/{tag}", val, self.mode, log_step
-      )
+      self._log_metric(f"orchestrator/{tag}", val, log_step)
 
     # --- 4. Trainer Metrics ---
     loss_val = None
@@ -605,17 +601,9 @@ class StandardRLProgram(RLProgram):
 
       loss_val = _extract_scalar(raw_loss)
       if loss_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix, "trainer/loss", loss_val, self.mode, log_step
-        )
+        self._log_metric("actor/loss", loss_val, log_step)
         perplexity_val = float(np.exp(loss_val))
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/perplexity",
-            perplexity_val,
-            self.mode,
-            log_step,
-        )
+        self._log_metric("actor/perplexity", perplexity_val, log_step)
 
       # Learning Rate
       raw_lr = scalar_metrics.pop(
@@ -623,13 +611,7 @@ class StandardRLProgram(RLProgram):
       )
       lr_val = _extract_scalar(raw_lr)
       if lr_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/learning_rate",
-            lr_val,
-            self.mode,
-            log_step,
-        )
+        self._log_metric("actor/learning_rate", lr_val, log_step)
 
       # Grad Norm
       raw_gn = scalar_metrics.pop(
@@ -637,22 +619,14 @@ class StandardRLProgram(RLProgram):
       )
       gn_val = _extract_scalar(raw_gn)
       if gn_val is not None:
-        self.metrics_logger.log(
-            self.metrics_prefix,
-            "trainer/grad_norm",
-            gn_val,
-            self.mode,
-            log_step,
-        )
+        self._log_metric("actor/grad_norm", gn_val, log_step)
 
       # Auxiliary weighted metrics
       for k, v in weighted_metrics.items():
         val = _extract_scalar(v)
         if val is not None:
-          metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
-          self.metrics_logger.log(
-              self.metrics_prefix, metric_key, val, self.mode, log_step
-          )
+          metric_key = f"actor/{k.removeprefix('trainer/')}"
+          self._log_metric(metric_key, val, log_step)
 
       # Auxiliary scalar metrics
       for k, v in scalar_metrics.items():
@@ -660,10 +634,8 @@ class StandardRLProgram(RLProgram):
           continue
         val = _extract_scalar(v)
         if val is not None:
-          metric_key = k if k.startswith("trainer/") else f"trainer/{k}"
-          self.metrics_logger.log(
-              self.metrics_prefix, metric_key, val, self.mode, log_step
-          )
+          metric_key = f"actor/{k.removeprefix('trainer/')}"
+          self._log_metric(metric_key, val, log_step)
 
     return {
         "reward_mean": reward_mean,

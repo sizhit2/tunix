@@ -1690,136 +1690,136 @@ class RLProgramTest(absltest.TestCase):
       self.assertIsNotNone(logger)
 
       # 1. Trainer Metrics (retrieved from TrainerWorker.get_metrics)
-      self.assertTrue(logger.metric_exists("", "trainer/loss", "train"))
+      self.assertTrue(logger.metric_exists("actor", "loss", "train"))
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/loss", "train"), 0.5
+          logger.get_metric("actor", "loss", "train"), 0.5
       )
-      self.assertTrue(logger.metric_exists("", "trainer/perplexity", "train"))
+      self.assertTrue(logger.metric_exists("actor", "perplexity", "train"))
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/perplexity", "train"),
+          logger.get_metric("actor", "perplexity", "train"),
           float(np.exp(0.5)),
           places=5,
       )
       self.assertTrue(
-          logger.metric_exists("", "trainer/learning_rate", "train")
+          logger.metric_exists("actor", "learning_rate", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/learning_rate", "train"), 1e-4
+          logger.get_metric("actor", "learning_rate", "train"), 1e-4
       )
-      self.assertTrue(logger.metric_exists("", "trainer/grad_norm", "train"))
+      self.assertTrue(logger.metric_exists("actor", "grad_norm", "train"))
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/grad_norm", "train"), 0.25
+          logger.get_metric("actor", "grad_norm", "train"), 0.25
       )
-      self.assertTrue(logger.metric_exists("", "trainer/kl", "train"))
-      self.assertAlmostEqual(logger.get_metric("", "trainer/kl", "train"), 0.02)
+      self.assertTrue(logger.metric_exists("actor", "kl", "train"))
+      self.assertAlmostEqual(logger.get_metric("actor", "kl", "train"), 0.02)
 
       # 2. Reward Metrics
-      self.assertTrue(logger.metric_exists("", "rewards/mean", "train"))
+      self.assertTrue(logger.metric_exists("rewards", "mean", "train"))
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/mean", "train"), 2.5
+          logger.get_metric("rewards", "mean", "train"), 2.5
       )
-      self.assertTrue(logger.metric_exists("", "rewards/std", "train"))
-      self.assertAlmostEqual(logger.get_metric("", "rewards/std", "train"), 0.0)
-      self.assertTrue(logger.metric_exists("", "rewards/min", "train"))
-      self.assertAlmostEqual(logger.get_metric("", "rewards/min", "train"), 2.5)
-      self.assertTrue(logger.metric_exists("", "rewards/max", "train"))
-      self.assertAlmostEqual(logger.get_metric("", "rewards/max", "train"), 2.5)
-      self.assertTrue(logger.metric_exists("", "rewards/sum", "train"))
-      self.assertAlmostEqual(logger.get_metric("", "rewards/sum", "train"), 5.0)
+      self.assertTrue(logger.metric_exists("rewards", "std", "train"))
+      self.assertAlmostEqual(logger.get_metric("rewards", "std", "train"), 0.0)
+      self.assertTrue(logger.metric_exists("rewards", "min", "train"))
+      self.assertAlmostEqual(logger.get_metric("rewards", "min", "train"), 2.5)
+      self.assertTrue(logger.metric_exists("rewards", "max", "train"))
+      self.assertAlmostEqual(logger.get_metric("rewards", "max", "train"), 2.5)
+      self.assertTrue(logger.metric_exists("rewards", "sum", "train"))
+      self.assertAlmostEqual(logger.get_metric("rewards", "sum", "train"), 5.0)
 
       # Advantage Metrics
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/mean", "train")
+          logger.metric_exists("rewards", "advantage/mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/mean", "train"), 1.0
+          logger.get_metric("rewards", "advantage/mean", "train"), 1.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/max", "train")
+          logger.metric_exists("rewards", "advantage/max", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/max", "train"), 1.0
+          logger.get_metric("rewards", "advantage/max", "train"), 1.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/min", "train")
+          logger.metric_exists("rewards", "advantage/min", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/min", "train"), 1.0
+          logger.get_metric("rewards", "advantage/min", "train"), 1.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/std", "train")
+          logger.metric_exists("rewards", "advantage/std", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/std", "train"), 0.0
+          logger.get_metric("rewards", "advantage/std", "train"), 0.0
       )
       self.assertAlmostEqual(program.last_step_result.advantage_mean, 1.0)
       self.assertAlmostEqual(program.last_step_result.advantage_std, 0.0)
 
       # 3. Rollout Metrics (collected from RolloutWorker responses)
       self.assertTrue(
-          logger.metric_exists("", "rollout/prompt_length_mean", "train")
+          logger.metric_exists("generation", "prompt_length_mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/prompt_length_mean", "train"), 2.0
+          logger.get_metric("generation", "prompt_length_mean", "train"), 2.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rollout/completion_length_mean", "train")
+          logger.metric_exists("generation", "completion_length_mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/completion_length_mean", "train"), 2.0
+          logger.get_metric("generation", "completion_length_mean", "train"), 2.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rollout/total_tokens_mean", "train")
+          logger.metric_exists("generation", "total_tokens_mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/total_tokens_mean", "train"), 4.0
+          logger.get_metric("generation", "total_tokens_mean", "train"), 4.0
       )
 
-      self.assertTrue(logger.metric_exists("", "rollout/success_rate", "train"))
+      self.assertTrue(logger.metric_exists("generation", "success_rate", "train"))
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/success_rate", "train"), 1.0
+          logger.get_metric("generation", "success_rate", "train"), 1.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rollout/staleness_mean", "train")
+          logger.metric_exists("generation", "staleness_mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_mean", "train"), 0.0
+          logger.get_metric("generation", "staleness_mean", "train"), 0.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rollout/staleness_max", "train")
+          logger.metric_exists("generation", "staleness_max", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_max", "train"), 0.0
+          logger.get_metric("generation", "staleness_max", "train"), 0.0
       )
       self.assertTrue(
-          logger.metric_exists("", "rollout/staleness_min", "train")
+          logger.metric_exists("generation", "staleness_min", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_min", "train"), 0.0
+          logger.get_metric("generation", "staleness_min", "train"), 0.0
       )
 
       # 4. Orchestrator Metrics
       self.mock_engine.sync_weights.assert_not_called()
       self.assertTrue(
-          logger.metric_exists("", "orchestrator/policy_version", "train")
+          logger.metric_exists("orchestrator", "policy_version", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "orchestrator/policy_version", "train"), 0.0
+          logger.get_metric("orchestrator", "policy_version", "train"), 0.0
       )
       self.assertTrue(
-          logger.metric_exists("", "orchestrator/num_rollouts", "train")
+          logger.metric_exists("orchestrator", "num_rollouts", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "orchestrator/num_rollouts", "train"), 2.0
+          logger.get_metric("orchestrator", "num_rollouts", "train"), 2.0
       )
       self.assertTrue(
-          logger.metric_exists("", "orchestrator/num_microbatches", "train")
+          logger.metric_exists("orchestrator", "num_microbatches", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "orchestrator/num_microbatches", "train"), 1.0
+          logger.get_metric("orchestrator", "num_microbatches", "train"), 1.0
       )
       self.assertTrue(
-          logger.metric_exists("", "orchestrator/step_time_sec", "train")
+          logger.metric_exists("orchestrator", "step_time_sec", "train")
       )
 
     asyncio.run(_run())
@@ -1872,28 +1872,28 @@ class RLProgramTest(absltest.TestCase):
       logger = program.metrics_logger
       self.assertIsNotNone(logger)
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/mean", "train")
+          logger.metric_exists("rewards", "advantage/mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/mean", "train"), 0.5
+          logger.get_metric("rewards", "advantage/mean", "train"), 0.5
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/max", "train")
+          logger.metric_exists("rewards", "advantage/max", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/max", "train"), 1.5
+          logger.get_metric("rewards", "advantage/max", "train"), 1.5
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/min", "train")
+          logger.metric_exists("rewards", "advantage/min", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/min", "train"), -0.5
+          logger.get_metric("rewards", "advantage/min", "train"), -0.5
       )
       self.assertTrue(
-          logger.metric_exists("", "rewards/advantage/std", "train")
+          logger.metric_exists("rewards", "advantage/std", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rewards/advantage/std", "train"), 1.0
+          logger.get_metric("rewards", "advantage/std", "train"), 1.0
       )
       self.assertAlmostEqual(program.last_step_result.advantage_mean, 0.5)
       self.assertAlmostEqual(program.last_step_result.advantage_std, 1.0)
@@ -1976,10 +1976,10 @@ class RLProgramTest(absltest.TestCase):
           logger.get_metric("actor_mesh", "rewards/mean", "eval"), 3.0
       )
       self.assertTrue(
-          logger.metric_exists("actor_mesh", "trainer/loss", "eval")
+          logger.metric_exists("actor_mesh", "actor/loss", "eval")
       )
       self.assertAlmostEqual(
-          logger.get_metric("actor_mesh", "trainer/loss", "eval"), 0.2
+          logger.get_metric("actor_mesh", "actor/loss", "eval"), 0.2
       )
 
     asyncio.run(_run())
@@ -2049,16 +2049,16 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertTrue(
-          logger.metric_exists("", "rollout/staleness_mean", "train")
+          logger.metric_exists("generation", "staleness_mean", "train")
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_mean", "train"), 2.0
+          logger.get_metric("generation", "staleness_mean", "train"), 2.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_max", "train"), 2.0
+          logger.get_metric("generation", "staleness_max", "train"), 2.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/staleness_min", "train"), 2.0
+          logger.get_metric("generation", "staleness_min", "train"), 2.0
       )
 
     asyncio.run(_run())
@@ -2109,13 +2109,13 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/prompt_length_mean", "train"), 4.0
+          logger.get_metric("generation", "prompt_length_mean", "train"), 4.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/completion_length_mean", "train"), 6.0
+          logger.get_metric("generation", "completion_length_mean", "train"), 6.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/total_tokens_mean", "train"), 10.0
+          logger.get_metric("generation", "total_tokens_mean", "train"), 10.0
       )
 
     asyncio.run(_run())
@@ -2170,13 +2170,13 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/prompt_length_mean", "train"), 2.0
+          logger.get_metric("generation", "prompt_length_mean", "train"), 2.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/completion_length_mean", "train"), 3.0
+          logger.get_metric("generation", "completion_length_mean", "train"), 3.0
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/total_tokens_mean", "train"), 5.0
+          logger.get_metric("generation", "total_tokens_mean", "train"), 5.0
       )
 
     asyncio.run(_run())
@@ -2206,7 +2206,7 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertFalse(
-          logger.metric_exists("", "rollout/success_rate", "train")
+          logger.metric_exists("generation", "success_rate", "train")
       )
 
     asyncio.run(_run())
@@ -2227,12 +2227,12 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/loss", "train"), 0.35
+          logger.get_metric("actor", "loss", "train"), 0.35
       )
       self.assertAlmostEqual(
-          logger.get_metric("", "trainer/learning_rate", "train"), 5e-5
+          logger.get_metric("actor", "learning_rate", "train"), 5e-5
       )
-      self.assertAlmostEqual(logger.get_metric("", "trainer/kl", "train"), 0.01)
+      self.assertAlmostEqual(logger.get_metric("actor", "kl", "train"), 0.01)
 
     asyncio.run(_run())
 
@@ -2289,11 +2289,11 @@ class RLProgramTest(absltest.TestCase):
 
       logger = program.metrics_logger
       self.assertTrue(
-          logger.metric_exists("", "rollout/num_turns_mean", "train")
+          logger.metric_exists("generation", "num_turns_mean", "train")
       )
       # (2 + 4) / 2 = 3.0
       self.assertAlmostEqual(
-          logger.get_metric("", "rollout/num_turns_mean", "train"), 3.0
+          logger.get_metric("generation", "num_turns_mean", "train"), 3.0
       )
 
     asyncio.run(_run())
@@ -2436,14 +2436,14 @@ class RLProgramTest(absltest.TestCase):
         logged_dicts = [call.args[0] for call in mock_wandb.log.call_args_list]
         logged_keys = {k for d in logged_dicts for k in d.keys()}
 
-        self.assertIn("train/trainer/loss", logged_keys)
-        self.assertIn("train/trainer/learning_rate", logged_keys)
-        self.assertIn("train/rewards/mean", logged_keys)
-        self.assertIn("train/rewards/advantage/abs_mean", logged_keys)
-        self.assertIn("train/rewards/advantage/nonzero_frac", logged_keys)
-        self.assertIn("train/rollout/prompt_length_mean", logged_keys)
-        self.assertIn("train/rollout/staleness_mean", logged_keys)
-        self.assertIn("train/orchestrator/policy_version", logged_keys)
+        self.assertIn("actor/train/loss", logged_keys)
+        self.assertIn("actor/train/learning_rate", logged_keys)
+        self.assertIn("rewards/train/mean", logged_keys)
+        self.assertIn("rewards/train/advantage/abs_mean", logged_keys)
+        self.assertIn("rewards/train/advantage/nonzero_frac", logged_keys)
+        self.assertIn("generation/train/prompt_length_mean", logged_keys)
+        self.assertIn("generation/train/staleness_mean", logged_keys)
+        self.assertIn("orchestrator/train/policy_version", logged_keys)
 
         # Verify wandb.finish was called on close
         mock_wandb.finish.assert_called_once()
