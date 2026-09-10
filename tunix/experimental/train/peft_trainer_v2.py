@@ -951,6 +951,20 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
           metrics_buffer.additional_metrics[k][0].append(v)
     return metrics_buffer
 
+  def _write_buffered_step(self, buffer: MetricsBuffer) -> None:
+    """Writes one completed train step's buffered metrics.
+
+    The buffered step is incremented by one for logging purposes: train_step
+    is not incremented until the next model update, so a buffer created at
+    step ``k`` describes completed step ``k + 1``. Shared by the per-update
+    write and the end-of-run drain so the two cannot drift.
+    """
+    buffer.step += 1
+    self._write_metrics(buffer)
+    self._may_update_pbar(
+        self._tqdm_train_metrics, step=buffer.step, loss=buffer.loss
+    )
+
   def _write_train_metrics(self):
     """Writes previous buffered train metrics."""
     if self._prev_buffered_train_metrics is None:
@@ -958,15 +972,7 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
       self._prev_buffered_train_metrics = self._buffered_train_metrics
       self._buffered_train_metrics = None
       return
-    # increment the step by one for logging purpose, because train_step is not
-    # incremented until the next model update.
-    self._prev_buffered_train_metrics.step += 1
-    self._write_metrics(self._prev_buffered_train_metrics)
-    self._may_update_pbar(
-        self._tqdm_train_metrics,
-        step=self._prev_buffered_train_metrics.step,
-        loss=self._prev_buffered_train_metrics.loss,
-    )
+    self._write_buffered_step(self._prev_buffered_train_metrics)
     self._prev_buffered_train_metrics = self._buffered_train_metrics
     self._buffered_train_metrics = None
 
@@ -1283,13 +1289,7 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     parked = self._prev_buffered_train_metrics
     if parked is None:
       return self.get_metrics()
-    # Same +1 as _write_train_metrics: train_step is not incremented until the
-    # next model update, so the parked buffer is logged as the completed step.
-    parked.step += 1
-    self._write_metrics(parked)
-    self._may_update_pbar(
-        self._tqdm_train_metrics, step=parked.step, loss=parked.loss
-    )
+    self._write_buffered_step(parked)
     self._prev_buffered_train_metrics = None
     return self.get_metrics()
 

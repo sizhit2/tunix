@@ -949,6 +949,31 @@ class PeftTrainerTest(parameterized.TestCase):
     trainer._write_train_metrics()
     self.assertEqual(trainer.get_metrics().id, -1)
 
+  def test_close_without_flush_leaves_parked_step_for_a_post_close_pull(self):
+    # Lifecycle check: if nobody pulls flush=True before the worker stops,
+    # close() writes the parked completed step into _written_metrics (and the
+    # trainer's local logger) -- it is only retrievable by a pull *after*
+    # close(), which the distributed orchestrator never issues. That is why
+    # the orchestrator must drain before stop(), on the failure path too.
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=1000, max_steps=10)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    trainer = peft_trainer_v2.PeftTrainer(model, optax.sgd(1e-3), config)
+    trainer = trainer.with_gen_model_input_fn(dummy_gen_model_input_fn)
+    one = jnp.array(1.0)
+
+    for _ in range(2):
+      trainer._record_fwd_bwd(one, None)
+      trainer._record_update(one)
+      trainer.get_metrics()  # per-step pull, as the orchestrator does
+    trainer._record_fwd_bwd(one, None)  # trailing partial group
+
+    trainer.close()  # no flush_metrics() pull beforehand
+
+    # The completed step 2 was written by close(), but only a post-close pull
+    # can see it; the partial group was parked, not written.
+    self.assertEqual(trainer.get_metrics().id, 2)
+    self.assertEqual(trainer.get_metrics().id, -1)
+
   def test_empty_eval_dataset(self):
     config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=100)
     model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))

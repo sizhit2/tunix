@@ -2200,7 +2200,7 @@ class RLProgramTest(absltest.TestCase):
     # can be ahead of the trainer's completed updates (a trailing partial
     # accumulation group advances _step without an update), so logging at
     # self._step would attribute the final loss to a step that never ran.
-    import jax  # pylint: disable=g-import-not-at-top
+    import jax._src.monitoring as jax_monitoring  # pylint: disable=g-import-not-at-top
 
     records = []
 
@@ -2222,11 +2222,12 @@ class RLProgramTest(absltest.TestCase):
       await program.run_async(self.mock_engine)
       return program
 
-    jax.monitoring.register_scalar_listener(_listener)
-    try:
-      program = asyncio.run(_run())
-    finally:
-      jax.monitoring.clear_event_listeners()
+    jax_monitoring.register_scalar_listener(_listener)
+    self.addCleanup(
+        lambda: _listener in jax_monitoring._scalar_listeners
+        and jax_monitoring._scalar_listeners.remove(_listener)
+    )
+    program = asyncio.run(_run())
 
     self.mock_engine.get_metrics.assert_any_await(
         role=datatypes.Role.ACTOR, flush=True
@@ -2235,6 +2236,24 @@ class RLProgramTest(absltest.TestCase):
     loss_steps = [s for n, s in records if n.endswith("trainer/loss")]
     self.assertIn(7, loss_steps)
     self.assertNotIn(program.step, loss_steps)
+
+  def test_final_flush_runs_when_train_stage_fails(self):
+    # A partially failed run keeps the metrics of its last completed step: the
+    # drain also runs on the exception path, and the exception still
+    # propagates.
+    async def _run():
+      _set_mock_poll_batches(self.mock_engine, _make_trajectory_group())
+      self.mock_engine.train_step.side_effect = RuntimeError(
+          "Training worker OOM"
+      )
+      program = self._create_program(max_steps=1)
+      with self.assertRaises(RuntimeError):
+        await program.run_async(self.mock_engine)
+
+    asyncio.run(_run())
+    self.mock_engine.get_metrics.assert_any_await(
+        role=datatypes.Role.ACTOR, flush=True
+    )
 
   def test_final_flush_skips_empty_sentinel_buffer(self):
     # A trainer with nothing parked returns the empty buffer (id=-1); nothing

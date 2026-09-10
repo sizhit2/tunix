@@ -200,6 +200,15 @@ class AbstractTrainer(abc.ABC):
         f"{type(self).__name__} does not implement get_metrics."
     )
 
+  def flush_metrics(self) -> metrics.MetricsBuffer:
+    """Drains any completed-but-parked step and returns the metrics buffer.
+
+    Trainers that double-buffer metric I/O override this to write the parked
+    final step first; the default is a plain ``get_metrics()``, so backends
+    without a parked buffer need no change.
+    """
+    return self.get_metrics()
+
   @abc.abstractmethod
   def close(self) -> None:
     """Releases resources held by the trainer. Default: no-op."""

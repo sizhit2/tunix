@@ -319,6 +319,17 @@ class _MeshBoundTrainer:
     with self._mesh:
       self._trainer.close()
 
+  def flush_metrics(self) -> Any:
+    # Draining the parked final step materializes device arrays and reduces
+    # WeightedMetrics exactly like close() does, so it must run under the mesh
+    # rather than fall through __getattr__. MaxText's engine is not an
+    # AbstractTrainer and has no drain; read it as-is.
+    with self._mesh:
+      drain = getattr(self._trainer, "flush_metrics", None)
+      if drain is None:
+        return self._trainer.get_metrics()
+      return drain()
+
 
 def _create_maxtext_trainer_factory(args) -> Any:
   """Creates the trainer factory function for MaxText's MaxTextTrainingEngine."""

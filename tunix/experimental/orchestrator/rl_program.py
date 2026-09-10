@@ -594,6 +594,8 @@ class StandardRLProgram(RLProgram):
     if self.mode != Mode.TRAIN or self.engine is None:
       return
     try:
+      # TODO(b/532722981): drain other trainer roles (e.g. CRITIC) too; the
+      # per-step pull is ACTOR-only as well, so their tails are dropped today.
       final_metrics = await self.engine.get_metrics(
           role=datatypes.Role.ACTOR, flush=True
       )
@@ -612,7 +614,14 @@ class StandardRLProgram(RLProgram):
       try:
         final_step = int(final_step)
       except (TypeError, ValueError):
-        final_step = self._step
+        # No usable id. Do not fall back to self._step: it can be one ahead
+        # of the trainer's completed updates and already carry that step's
+        # trainer metrics, which is exactly the mislabelling this guards.
+        logging.warning(
+            "Final trainer metrics carry no step id (%r); skipping.",
+            final_step,
+        )
+        return
       if final_step < 0:
         return
       self._log_trainer_metrics(final_metrics, final_step)
@@ -622,10 +631,10 @@ class StandardRLProgram(RLProgram):
   def _log_trainer_metrics(
       self, trainer_metrics: Any, log_step: int
   ) -> tuple[float | None, float | None]:
-    """Logs one step's trainer scalar metrics (loss, perplexity, lr,
-    grad_norm and any aux) and returns (loss_val, perplexity_val).
+    """Logs one step's trainer scalar metrics; returns (loss_val, perplexity_val).
 
-    Shared by the per-step collection and the end-of-run flush that drains the
+    Covers loss, perplexity, learning rate, grad_norm and any aux metric. Shared
+    by the per-step collection and the end-of-run flush that drains the
     trainer's double-buffered final step (see PeftTrainer.flush_metrics); the
     non-distributed loop performs the same last-step drain in close().
     """
@@ -727,7 +736,25 @@ class StandardRLProgram(RLProgram):
     return loss_val, perplexity_val
 
   async def train_stage(self) -> None:
-    """Stage 3: Streaming gradient accumulation with RLTrainerPayloads."""
+    """Stage 3: Streaming gradient accumulation with RLTrainerPayloads.
+
+    Runs the train loop, then drains the trainer's double-buffered final step
+    (the same last-step flush close() performs in the non-distributed loop).
+    The drain also runs when the loop fails, so a partially failed run keeps
+    the metrics of its last completed step; it is skipped on cancellation,
+    where awaiting a remote pull is not safe.
+    """
+    try:
+      await self._train_loop()
+    except asyncio.CancelledError:
+      raise
+    except Exception:
+      await self._flush_final_trainer_metrics()
+      raise
+    else:
+      await self._flush_final_trainer_metrics()
+
+  async def _train_loop(self) -> None:
     assert self.engine is not None
 
     while self.max_steps is None or self._step < self.max_steps:
@@ -898,12 +925,6 @@ class StandardRLProgram(RLProgram):
       if self.on_step_end:
         self.on_step_end(current_step, step_result)
       self._step += 1
-
-    # The trainer double-buffers metrics (writes the previous step, parks
-    # the current one to overlap I/O). Once this loop exits the last step
-    # is still parked, so drain it explicitly -- the same last-step flush
-    # close() performs in the non-distributed PeftTrainer loop.
-    await self._flush_final_trainer_metrics()
 
   async def run_async(
       self,
