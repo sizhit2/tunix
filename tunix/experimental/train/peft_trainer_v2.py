@@ -1032,6 +1032,12 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
   def _prepare_payload(self, payload: Any) -> Any:
     """Applies input preparation and sharding to one training payload."""
     payload = self._prepare_inputs(payload)
+    # `metadata` is a static (pytree_node=False) field, so it is part of the
+    # jit cache key. The orchestrator stamps per-microbatch values into it
+    # (trajectory_ids, lineage), which makes every fwd_bwd call a cache miss
+    # and a full XLA recompile. Nothing inside the jitted step reads it.
+    if dataclasses.is_dataclass(payload) and hasattr(payload, "metadata"):
+      payload = dataclasses.replace(payload, metadata={})
     return sharding_utils.shard_input(payload, self.config.data_sharding_axis)
 
   def _record_fwd_bwd(self, train_loss: ArrayLike, aux: Any) -> None:
