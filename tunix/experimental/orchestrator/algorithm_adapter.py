@@ -160,7 +160,22 @@ class GRPOAdapter(AlgorithmAdapter):
       kl_loss_mode: str = "mse_kl",
       kl_clamp_value: float | None = None,
       use_rollout_logps: bool = True,
+      force_on_policy_ratio: bool = False,
   ):
+    """GRPO adapter.
+
+    Args:
+      use_rollout_logps: Use the rollout engine's per-token log-probs as
+        `old_per_token_logps`. Whether the field is present is decided here,
+        once per adapter, never per trajectory (mirrors
+        `tunix/rl/grpo/grpo_learner.py`), so every trainer payload has the
+        same pytree structure and the jitted step compiles once.
+      force_on_policy_ratio: Never emit `old_per_token_logps`; the loss then
+        uses `stop_gradient(current_logps)` (`tunix/rl/algo_core.py`), pinning
+        the surrogate ratio to 1.0 so clipping never fires and sampler-vs-
+        trainer numerical noise leaves the ratio (mirrors
+        `AgenticGRPOLearner.force_on_policy_ratio`).
+    """
     if group_size <= 1:
       raise ValueError(
           f"group_size must be greater than 1 for GRPO. Received: {group_size}"
@@ -185,6 +200,7 @@ class GRPOAdapter(AlgorithmAdapter):
     self.kl_clamp_value = kl_clamp_value
     self.requires_reference_kl = beta_kl != 0.0
     self.use_rollout_logps = use_rollout_logps
+    self.force_on_policy_ratio = force_on_policy_ratio
 
   def compute_advantages(
       self,
@@ -245,16 +261,31 @@ class GRPOAdapter(AlgorithmAdapter):
           else np.zeros(0, dtype=np.int32)
       )
       seq_adv = np.full(len(c_arr), adv_val, dtype=np.float32)
-      old_lp = (
-          getattr(item, "old_per_token_logps", None)
-          if self.use_rollout_logps
-          else None
-      )
-      old_lp = (
-          np.asarray(old_lp, dtype=np.float32)
-          if old_lp is not None and len(old_lp) == len(c_arr)
-          else None
-      )
+      # Presence of old_per_token_logps is a per-adapter decision, not a
+      # per-row one: a row that silently drops it would flip the payload's
+      # pytree structure (PaddedBatchAssembler only emits an optional field
+      # when every row in the chunk carries it), and each structure variant is
+      # a separate XLA compile of the trainer step. So when rollout logps are
+      # required, a missing or mis-sized row is an error, the same way
+      # grpo_learner.py refuses to proceed without them.
+      old_lp = None
+      if self.use_rollout_logps and not self.force_on_policy_ratio:
+        raw_lp = getattr(item, "old_per_token_logps", None)
+        if raw_lp is None and len(c_arr) == 0:
+          # An empty completion has no tokens to score; keep the field present
+          # (length 0) so the structure matches the rest of the batch.
+          raw_lp = np.zeros(0, dtype=np.float32)
+        got = None if raw_lp is None else len(np.asarray(raw_lp).reshape(-1))
+        if got != len(c_arr):
+          raise ValueError(
+              "use_rollout_logps=True but trajectory"
+              f" {getattr(item, 'traj_id', i)!r} carries"
+              f" {'no' if got is None else got} per-token logps for"
+              f" {len(c_arr)} completion tokens. Fix the sampler's logprob"
+              " output, or train with ratio=1 via use_rollout_logps=False /"
+              " force_on_policy_ratio=True."
+          )
+        old_lp = np.asarray(raw_lp, dtype=np.float32).reshape(-1)
       payload = datatypes.RLTrainerPayload(
           prompt_ids=p_arr,
           prompt_mask=np.ones(len(p_arr), dtype=np.float32),

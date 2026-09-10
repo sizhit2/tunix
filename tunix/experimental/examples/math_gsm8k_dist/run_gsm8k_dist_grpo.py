@@ -168,6 +168,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       ),
   )
   parser.add_argument(
+      "--force_on_policy_ratio",
+      action=argparse.BooleanOptionalAction,
+      default=False,
+      help=(
+          "Never send rollout log-probs to the trainer; the loss pins the"
+          " surrogate ratio to 1.0 (stop_gradient of the current logps)."
+          " Mirrors AgenticGRPOLearner.force_on_policy_ratio."
+      ),
+  )
+  parser.add_argument(
       "--debug",
       action="store_true",
       help="Enable debug logging and print full sampler responses.",
@@ -186,6 +196,7 @@ def _build_algo(args: argparse.Namespace) -> algorithm_adapter.GRPOAdapter:
       beta_kl=args.beta,
       temperature=args.temperature,
       use_rollout_logps=args.use_rollout_logps,
+      force_on_policy_ratio=args.force_on_policy_ratio,
   )
 
 
