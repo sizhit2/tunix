@@ -27,6 +27,7 @@ def _create_item(
     group_index: int = 0,
     task_id: str = "",
     reward: float = 1.0,
+    policy_version: int = 0,
 ) -> datatypes.TrajectoryItem:
   """Helper to create a TrajectoryItem for testing."""
   traj = datatypes.Trajectory(reward=reward)
@@ -36,6 +37,7 @@ def _create_item(
       start_step=0,
       traj=traj,
       metadata={"task_id": task_id},
+      policy_version=policy_version,
   )
 
 
@@ -192,6 +194,158 @@ class QueueManagerTest(absltest.TestCase):
         await manager.get_batch(1)
 
     asyncio.run(_run_test())
+
+
+class StalenessFilterTest(absltest.TestCase):
+  """Tests policy-staleness filtering in `TrajectoryQueueManager.create`."""
+
+  _GROUP_SIZE = 4
+  _CURRENT_VERSION = 10
+
+  def _make_manager(self, max_staleness=0, **kwargs):
+    return trajectory_queue_manager.TrajectoryQueueManager.create(
+        group_size=self._GROUP_SIZE,
+        max_staleness=max_staleness,
+        current_policy_version=lambda: self._CURRENT_VERSION,
+        **kwargs,
+    )
+
+  async def _put_group(self, manager, prompt_id, versions):
+    items = [
+        _create_item(prompt_id, group_index=i, policy_version=v)
+        for i, v in enumerate(versions)
+    ]
+    for item in items:
+      await manager.put(item)
+    return items
+
+  def test_strict_on_policy_drops_stale_group(self):
+    """max_staleness=0 must reject trajectories from an older policy version."""
+
+    async def _run_test():
+      manager = self._make_manager(max_staleness=0)
+      items = await self._put_group(manager, "g1", [0] * self._GROUP_SIZE)
+
+      self.assertEmpty(manager._ready_groups)
+      filtered_groups = await manager.get_filtered_groups()
+      self.assertLen(filtered_groups, 1)
+      self.assertCountEqual(filtered_groups[0], items)
+
+    asyncio.run(_run_test())
+
+  def test_strict_on_policy_admits_current_group(self):
+    """max_staleness=0 still admits trajectories from the current version."""
+
+    async def _run_test():
+      manager = self._make_manager(max_staleness=0)
+      items = await self._put_group(
+          manager, "g1", [self._CURRENT_VERSION] * self._GROUP_SIZE
+      )
+
+      group = await manager.get_group()
+      self.assertCountEqual(group, items)
+      self.assertEmpty(await manager.get_filtered_groups())
+
+    asyncio.run(_run_test())
+
+  def test_partially_stale_group_is_dropped_whole(self):
+    """A group with any stale member is dropped entirely, never truncated.
+
+    Group-relative advantages are computed over a full `group_size` group, so
+    emitting the surviving members would skew the baseline and break the
+    `reshape(-1, group_size)` in `compute_advantages`.
+    """
+
+    async def _run_test():
+      manager = self._make_manager(max_staleness=2)
+      # Three items within the bound, one well outside it.
+      items = await self._put_group(manager, "g1", [10, 10, 10, 0])
+
+      self.assertEmpty(manager._ready_groups)
+      filtered_groups = await manager.get_filtered_groups()
+      self.assertLen(filtered_groups, 1)
+      self.assertCountEqual(filtered_groups[0], items)
+
+    asyncio.run(_run_test())
+
+  def test_admits_group_within_staleness_bound(self):
+    """Items at or above `current_version - max_staleness` are admitted."""
+
+    async def _run_test():
+      manager = self._make_manager(max_staleness=2)
+      items = await self._put_group(manager, "g1", [10, 9, 8, 10])
+
+      group = await manager.get_group()
+      self.assertCountEqual(group, items)
+      self.assertEmpty(await manager.get_filtered_groups())
+
+    asyncio.run(_run_test())
+
+  def test_no_policy_version_callable_disables_filtering(self):
+    """Without a version reference there is nothing to compare against."""
+
+    async def _run_test():
+      manager = trajectory_queue_manager.TrajectoryQueueManager.create(
+          group_size=self._GROUP_SIZE, max_staleness=0
+      )
+      self.assertIsNone(manager.filter_fn)
+
+      for i in range(self._GROUP_SIZE):
+        await manager.put(_create_item("g1", group_index=i, policy_version=0))
+      self.assertLen(manager._ready_groups, 1)
+
+    asyncio.run(_run_test())
+
+  def test_user_filter_fn_composes_with_staleness_filter(self):
+    """A caller-supplied filter still runs on groups that pass staleness."""
+
+    async def _run_test():
+      manager = self._make_manager(
+          max_staleness=0,
+          filter_fn=lambda group: [i for i in group if i.traj.reward > 0],
+      )
+      items = [
+          _create_item(
+              "g1",
+              group_index=i,
+              reward=1.0 if i < 3 else -1.0,
+              policy_version=self._CURRENT_VERSION,
+          )
+          for i in range(self._GROUP_SIZE)
+      ]
+      for item in items:
+        await manager.put(item)
+
+      group = await manager.get_group()
+      self.assertCountEqual(group, items[:3])
+      self.assertEqual(await manager.get_filtered_groups(), [[items[3]]])
+
+    asyncio.run(_run_test())
+
+  def test_stale_group_skips_user_filter_fn(self):
+    """A group rejected for staleness is not handed to the caller's filter."""
+
+    async def _run_test():
+      calls = []
+
+      def tracking_filter_fn(group):
+        calls.append(list(group))
+        return list(group)
+
+      manager = self._make_manager(
+          max_staleness=0, filter_fn=tracking_filter_fn
+      )
+      await self._put_group(manager, "g1", [0] * self._GROUP_SIZE)
+
+      self.assertEmpty(calls)
+      self.assertEmpty(manager._ready_groups)
+
+    asyncio.run(_run_test())
+
+  def test_negative_max_staleness_rejected(self):
+    """`max_staleness` must be non-negative."""
+    with self.assertRaises(AssertionError):
+      self._make_manager(max_staleness=-1)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@
 
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any, Optional
+from absl import logging
 from tunix.experimental.common import datatypes
 from tunix.rl.agentic.queue_manager import group_queue_manager
 
@@ -71,10 +72,30 @@ class TrajectoryQueueManager(group_queue_manager.GroupQueueManager):
       current_policy_version: Callable[[], int] | None = None,
       filter_fn: Any | None = None,
   ) -> "TrajectoryQueueManager":
-    """Creates a grouped trajectory queue with optional policy staleness filtering."""
+    """Creates a grouped trajectory queue with optional policy staleness filtering.
+
+    Args:
+      group_size: Target number of trajectories per ready group.
+      max_staleness: Maximum tolerated lag, in policy versions, between the
+        weights a trajectory was generated with and the current policy. `0`
+        means strictly on-policy: only trajectories generated with the current
+        policy version are admitted.
+      current_policy_version: Callable returning the trainer's current policy
+        version. Staleness filtering is enabled whenever this is provided;
+        without it there is no reference point and no filtering is possible.
+      filter_fn: Optional additional filter applied to groups that pass the
+        staleness check.
+
+    Returns:
+      A `TrajectoryQueueManager` enforcing the requested staleness bound.
+    """
     assert max_staleness >= 0, "max_staleness must be non-negative."
     combined_filter = filter_fn
-    if max_staleness > 0 and current_policy_version is not None:
+    # NB: `max_staleness == 0` is the *strictest* setting, not "filtering
+    # disabled" -- `--max_staleness` is documented as "0 means queue-level
+    # on-policy training". Gating on `max_staleness > 0` here would silently
+    # admit arbitrarily stale trajectories in exactly that configuration.
+    if current_policy_version is not None:
 
       def _staleness_filter(group: Sequence[Any]) -> Any:
         min_allowed = current_policy_version() - max_staleness
@@ -88,11 +109,26 @@ class TrajectoryQueueManager(group_queue_manager.GroupQueueManager):
             for item in group
             if getattr(item, "policy_version", 0) < min_allowed
         ]
+        if filtered:
+          # Group-relative algorithms (e.g. GRPO) derive each advantage from a
+          # baseline over the whole group, and reshape rewards to
+          # `(-1, group_size)` to do so. Admitting the surviving members of a
+          # partially stale group would both skew that baseline and break the
+          # reshape, so staleness is all-or-nothing: drop the entire group.
+          logging.warning(
+              "Dropping trajectory group (prompt_id=%s): %d of %d items are"
+              " staler than the %d-version bound (min_allowed=%d,"
+              " versions=%s).",
+              getattr(group[0], "prompt_id", "<unknown>") if group else None,
+              len(filtered),
+              len(group),
+              max_staleness,
+              min_allowed,
+              [getattr(item, "policy_version", 0) for item in group],
+          )
+          return [], list(group)
         if filter_fn is not None:
-          res = filter_fn(valid)
-          if isinstance(res, tuple):
-            return res[0], list(res[1]) + filtered
-          return res, filtered
+          return filter_fn(valid)
         return valid, filtered
 
       combined_filter = _staleness_filter
