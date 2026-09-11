@@ -378,6 +378,7 @@ class StandardRLProgram(RLProgram):
     turns_list = []
     successes = []
     staleness_list = []
+    clipped_flags = []
     for item in all_step_items:
       p_len = None
       prompt_tokens = getattr(item, "prompt_tokens", None)
@@ -423,15 +424,18 @@ class StandardRLProgram(RLProgram):
           item, "status", None
       )
       if status is not None:
-        if isinstance(status, datatypes.TrajectoryStatus):
-          if status != datatypes.TrajectoryStatus.RUNNING:
-            is_succ = status == datatypes.TrajectoryStatus.SUCCEEDED
-            successes.append(1.0 if is_succ else 0.0)
-        elif isinstance(status, str):
-          status_str = status.upper()
-          if status_str != "RUNNING":
-            is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
-            successes.append(1.0 if is_succ else 0.0)
+        # Terminal status as reported by the trajectory collect engine. A
+        # trajectory whose response-token budget ran out is
+        # MAX_CONTEXT_LIMIT_REACHED (the engine stops it there and skips
+        # env.step), which is what `generation/completions/clip_ratio` counts;
+        # it is not re-derived from token lengths or stop ids here.
+        status_str = str(getattr(status, "name", status)).upper()
+        if status_str != "RUNNING":
+          is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
+          successes.append(1.0 if is_succ else 0.0)
+          clipped_flags.append(
+              1.0 if status_str == "MAX_CONTEXT_LIMIT_REACHED" else 0.0
+          )
 
       # Batch ingestion staleness: consumed_policy_version - item.policy_version
       pol_ver = getattr(item, "policy_version", None)
@@ -457,6 +461,16 @@ class StandardRLProgram(RLProgram):
           self.metrics_prefix,
           "rollout/completion_length_mean",
           float(np.mean(completion_lengths)),
+          self.mode,
+          log_step,
+      )
+    if clipped_flags:
+      # Same definition as AgenticGRPOLearner: the completion used its whole
+      # response budget and did not end on a stop token.
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "generation/completions/clip_ratio",
+          float(np.mean(clipped_flags)),
           self.mode,
           log_step,
       )

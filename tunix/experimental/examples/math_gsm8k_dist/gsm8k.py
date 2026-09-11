@@ -57,6 +57,22 @@ def score_gsm8k_completion(
   reward, format_ok, answer_ok, _ = gsm8k_vtc.vtc_completion_outcome(
       completion, gold_answer
   )
+  # One line per scored sample so reward behaviour can be audited from the
+  # rollout log without shipping completion text through the orchestrator.
+  logging.info(
+      "GSM8K_SCORE style=vtc reward=%.2f format=%d answer_correct=%d"
+      " len=%d close_tags=%d answer_tags=%d boxed=%r gold=%r head=%r tail=%r",
+      reward,
+      int(format_ok),
+      int(answer_ok),
+      len(completion),
+      completion.count("</reasoning>"),
+      completion.count("<answer>"),
+      extract_boxed_answer(completion),
+      normalize_answer(normalize_example_value(gold_answer)),
+      completion[:120],
+      completion[-160:],
+  )
   return reward, {
       "format_correct": format_ok,
       "answer_correct": answer_ok,

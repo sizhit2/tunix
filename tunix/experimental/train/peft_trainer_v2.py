@@ -104,6 +104,13 @@ class TrainingConfig:
   # needs no tuning. Set a smaller value only to shrink the loss buckets at very
   # large budgets; ``pack_sequences`` raises if a pack exceeds it.
   max_segments_per_packed_row: int | None = None
+  # dtype the weights are cast to before being bound to the weight-sync
+  # transport. Lets the trainer keep fp32 master weights (as
+  # examples/math_gsm8k/qwen3_grpo_demo.py does for the actor) while the
+  # rollout side serves bf16: Raiden pairs source and destination tensors by
+  # name and byte size, so the bound copy must match the destination dtype.
+  # ``None`` binds the live weights unchanged.
+  weight_sync_dtype: Any | None = None
 
   def get_with_default(self, key: str, default: Any) -> Any:
     val = getattr(self, key)
@@ -1203,6 +1210,29 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     )
     return metadata
 
+  def _cast_for_weight_sync(self, state: Any) -> Any:
+    """Casts a state's floating leaves to `weight_sync_dtype` if it is set.
+
+    A cast produces a fresh copy each round; the synchronizer rebinds it, so
+    the transport always stages the current weights in the destination dtype.
+    Non-floating leaves are left untouched.
+    """
+    dtype = self.config.get_with_default("weight_sync_dtype", None)
+    if dtype is None:
+      return state
+    dtype = jnp.dtype(dtype)
+
+    def _cast(x):
+      if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
+        return x.astype(dtype) if x.dtype != dtype else x
+      return x
+
+    return jax.tree.map(_cast, state)
+
+  def _weight_sync_source_state(self) -> Any:
+    """Returns the live model state in the weight-sync dtype."""
+    return self._cast_for_weight_sync(nnx.state(self.model))
+
   @override
   def prepare_weight_sync(self, sync_request: Any = None, **kwargs) -> Any:
     """Stages this round's weights on the raiden transport, returns metadata."""
@@ -1244,10 +1274,14 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
           reshard_fn=None,
           rollout_engine=backend,
       )
-      worker.bind(converted_state)
+      # The mapped path bypasses _weight_sync_source_state, so apply the same
+      # cast here: raiden pairs tensors by name AND item size, so a float32
+      # master weight staged against a bfloat16 rollout parameter does not
+      # pair up.
+      worker.bind(self._cast_for_weight_sync(converted_state))
     else:
       # TODO(lancewang): Handle LoRA parameter synchronization.
-      worker.bind(nnx.state(self.model))
+      worker.bind(self._weight_sync_source_state())
 
     worker.d2h()
     if os.environ.get("VERIFY_WEIGHTS", "").lower() == "true":

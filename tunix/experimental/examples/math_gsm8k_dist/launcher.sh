@@ -65,10 +65,20 @@ WANDB_API_KEY=${WANDB_API_KEY:-}
 SAMPLER=${SAMPLER:-inprocess_vllm}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-none}
 USE_ROLLOUT_LOGPS=${USE_ROLLOUT_LOGPS:-true}
-# auto: model-family chat template; raw: verbatim prompt text, as
-# examples/math_gsm8k/qwen3_grpo_demo.py does (its VTC template ends with an
-# opened <reasoning> tag that the model is meant to continue).
+# auto: model-family chat template; raw: verbatim prompt text, as the
+# non-experimental qwen3_grpo_demo does (its VTC template ends with an opened
+# <reasoning> tag that the model is meant to continue).
 CHAT_PARSER=${CHAT_PARSER:-auto}
+STOP_TOKENS=${STOP_TOKENS:-generation_config}
+# 0/0 keeps a constant LR; qwen3_grpo_demo uses warmup 50 / decay 500.
+WARMUP_STEPS=${WARMUP_STEPS:-0}
+LR_DECAY_STEPS=${LR_DECAY_STEPS:-0}
+ADAM_EPS=${ADAM_EPS:-1e-8}
+# Trainer parameter dtype and the dtype bound for weight sync. The rollout
+# always serves bf16, so MODEL_DTYPE=float32 (fp32 master weights, like the
+# demo's actor) must be paired with WEIGHT_SYNC_DTYPE=bfloat16.
+MODEL_DTYPE=${MODEL_DTYPE:-bfloat16}
+WEIGHT_SYNC_DTYPE=${WEIGHT_SYNC_DTYPE:-}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
 # not a clean failure: Raiden pairs tensors by exact name, so a MaxText trainer
@@ -116,6 +126,15 @@ ROLLOUT_TP=${ROLLOUT_TP:-2}
 INFERENCE_TPU_CHIPS=${INFERENCE_TPU_CHIPS:-}
 TPU_CHIPS_PER_HOST_BOUNDS=${TPU_CHIPS_PER_HOST_BOUNDS:-1,2,1}
 TPU_HOST_BOUNDS=${TPU_HOST_BOUNDS:-1,1,1}
+# Per-role chip bounds default to the shared value; override them to give the
+# roles differently sized slices, e.g. a 4-chip trainer with 2-chip rollout
+# and reference workers on one 8-chip host:
+#   TRAINER_TPU_CHIPS=0,1,2,3 TRAINER_CHIP_BOUNDS=1,4,1
+#   ROLLOUT_TPU_CHIPS=4,5     ROLLOUT_CHIP_BOUNDS=1,2,1
+#   INFERENCE_TPU_CHIPS=6,7   INFERENCE_CHIP_BOUNDS=1,2,1
+TRAINER_CHIP_BOUNDS=${TRAINER_CHIP_BOUNDS:-$TPU_CHIPS_PER_HOST_BOUNDS}
+ROLLOUT_CHIP_BOUNDS=${ROLLOUT_CHIP_BOUNDS:-$TPU_CHIPS_PER_HOST_BOUNDS}
+INFERENCE_CHIP_BOUNDS=${INFERENCE_CHIP_BOUNDS:-$TPU_CHIPS_PER_HOST_BOUNDS}
 # If OOM, try the following settings (assume 8 chips per host):
 # TRAINER_TPU_CHIPS=${TRAINER_TPU_CHIPS:-0,1,2,3}
 # TRAINER_FSDP=${TRAINER_FSDP:-1}
@@ -453,6 +472,11 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --adam_b2="$ADAM_B2"
     --weight_decay="$WEIGHT_DECAY"
     --learning_rate="$LEARNING_RATE"
+    --adam_eps="$ADAM_EPS"
+    --warmup_steps="$WARMUP_STEPS"
+    --lr_decay_steps="$LR_DECAY_STEPS"
+    --model_dtype="$MODEL_DTYPE"
+    --weight_sync_dtype="$WEIGHT_SYNC_DTYPE"
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
     --trainer_backend="$TRAINER_BACKEND"
@@ -481,9 +505,9 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     export JAX_PLATFORMS=tpu,cpu
     export TPU_VISIBLE_DEVICES=${TRAINER_TPU_CHIPS}
     export TPU_VISIBLE_CHIPS=${TPU_VISIBLE_DEVICES}
-    export TPU_CHIPS_PER_HOST_BOUNDS=${TPU_CHIPS_PER_HOST_BOUNDS}
+    export TPU_CHIPS_PER_HOST_BOUNDS=${TRAINER_CHIP_BOUNDS}
     export TPU_HOST_BOUNDS=${TPU_HOST_BOUNDS}
-    export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${TPU_CHIPS_PER_HOST_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
+    export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${TRAINER_CHIP_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
   fi
   export PYTHONUNBUFFERED=1
   env | egrep 'JAX|TPU'
@@ -515,6 +539,7 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
     --lora_alpha="$LORA_ALPHA"
     --weight_sync_mode="$WEIGHT_SYNC_MODE"
     --chat_parser="$CHAT_PARSER"
+    --stop_tokens="$STOP_TOKENS"
   )
   if [[ -n "$MAXTEXT_MODEL_NAME" ]]; then
     ROLLOUT_CMD+=( --maxtext_model_name="$MAXTEXT_MODEL_NAME" )
@@ -530,9 +555,9 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
   export SKIP_JAX_PRECOMPILE=1
   export TPU_VISIBLE_DEVICES=${ROLLOUT_TPU_CHIPS}
   export TPU_VISIBLE_CHIPS=${TPU_VISIBLE_DEVICES}
-  export TPU_CHIPS_PER_HOST_BOUNDS=${TPU_CHIPS_PER_HOST_BOUNDS}
+  export TPU_CHIPS_PER_HOST_BOUNDS=${ROLLOUT_CHIP_BOUNDS}
   export TPU_HOST_BOUNDS=${TPU_HOST_BOUNDS}
-  export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${TPU_CHIPS_PER_HOST_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
+  export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${ROLLOUT_CHIP_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
   export PYTHONUNBUFFERED=1
   env | egrep 'JAX|TPU'
   print_command "Rollout command" "${ROLLOUT_CMD[@]}"
@@ -659,9 +684,9 @@ if [[ "$RUN_INFERENCE_NODE" == "1" || "$RUN_INFERENCE_NODE" == "true" || "$RUN_I
     export JAX_PLATFORMS=tpu,cpu
     export TPU_VISIBLE_DEVICES=${INFERENCE_TPU_CHIPS}
     export TPU_VISIBLE_CHIPS=${TPU_VISIBLE_DEVICES}
-    export TPU_CHIPS_PER_HOST_BOUNDS=${TPU_CHIPS_PER_HOST_BOUNDS}
+    export TPU_CHIPS_PER_HOST_BOUNDS=${INFERENCE_CHIP_BOUNDS}
     export TPU_HOST_BOUNDS=${TPU_HOST_BOUNDS}
-    export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${TPU_CHIPS_PER_HOST_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
+    export LIBTPU_INIT_ARGS=deepsea_chips_per_host_bounds=${INFERENCE_CHIP_BOUNDS},deepsea_host_bounds=${TPU_HOST_BOUNDS}
     export PYTHONUNBUFFERED=1
     env | egrep 'JAX|TPU'
     print_command "Inference command" "${INFERENCE_CMD[@]}"

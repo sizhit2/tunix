@@ -427,15 +427,20 @@ class RolloutResponse(Response):
                 logps=None,
             )
         )
-    if hasattr(traj, "status") and traj.status is not None:
-      status_val = getattr(traj.status, "name", str(traj.status))
-    else:
-      status_val = "COMPLETED"
-
     resp_metadata = {}
     extra = getattr(traj, "extra", None)
     if isinstance(extra, dict):
       resp_metadata.update(extra)
+
+    # Terminal status: a `status` attribute when the trajectory type has one,
+    # else the name the collector stashed in `extra` (the collect engine's
+    # TrajectoryStatus, e.g. MAX_CONTEXT_LIMIT_REACHED), else COMPLETED.
+    if getattr(traj, "status", None) is not None:
+      status_val = getattr(traj.status, "name", str(traj.status))
+    elif resp_metadata.get("status"):
+      status_val = str(resp_metadata["status"])
+    else:
+      status_val = "COMPLETED"
     if hasattr(traj, "metadata") and isinstance(traj.metadata, dict):
       resp_metadata.update(traj.metadata)
     if metadata:
