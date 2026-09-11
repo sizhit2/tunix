@@ -43,6 +43,22 @@ _summarize_list = logging_utils.summarize_list
 
 
 # TODO: this multi step conversions seem excessive we convert from trajecotry to response then to trajectory item. we should simplify
+def _trajectory_status_from_name(name: Any) -> datatypes.TrajectoryStatus:
+  """Maps a RolloutResponse status name onto the collect engine's enum.
+
+  Rollout paths that go through the agentic collect engine report its terminal
+  status by name (e.g. ``MAX_CONTEXT_LIMIT_REACHED``); the direct sampler path
+  reports ``COMPLETED``. Anything unrecognised is a failure.
+  """
+  key = str(getattr(name, "name", name) or "").upper()
+  if key in ("COMPLETED", "SUCCEEDED", "SUCCESS"):
+    return datatypes.TrajectoryStatus.SUCCEEDED
+  try:
+    return datatypes.TrajectoryStatus[key]
+  except KeyError:
+    return datatypes.TrajectoryStatus.FAILED
+
+
 def _response_to_trajectory_item(resp: Any) -> datatypes.TrajectoryItem:
   """Converts a worker rollout response to an TrajectoryItem."""
   if isinstance(resp, datatypes.TrajectoryItem):
@@ -50,14 +66,9 @@ def _response_to_trajectory_item(resp: Any) -> datatypes.TrajectoryItem:
 
   if isinstance(resp, datatypes.RolloutResponse):
     metadata = dict(resp.metadata) if resp.metadata else {}
-    success_statuses = {"COMPLETED", "SUCCEEDED"}
     traj = datatypes.Trajectory(
         reward=resp.env_reward,
-        status=(
-            datatypes.TrajectoryStatus.SUCCEEDED
-            if resp.status in success_statuses
-            else datatypes.TrajectoryStatus.FAILED
-        ),
+        status=_trajectory_status_from_name(resp.status),
     )
     prompt_tokens = (
         np.asarray(resp.prompt_tokens, dtype=np.int32)

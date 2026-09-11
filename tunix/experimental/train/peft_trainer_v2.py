@@ -1210,14 +1210,13 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     )
     return metadata
 
-  def _weight_sync_source_state(self) -> Any:
-    """Returns the live model state, cast to `weight_sync_dtype` if set.
+  def _cast_for_weight_sync(self, state: Any) -> Any:
+    """Casts a state's floating leaves to `weight_sync_dtype` if it is set.
 
     A cast produces a fresh copy each round; the synchronizer rebinds it, so
     the transport always stages the current weights in the destination dtype.
     Non-floating leaves are left untouched.
     """
-    state = nnx.state(self.model)
     dtype = self.config.get_with_default("weight_sync_dtype", None)
     if dtype is None:
       return state
@@ -1229,6 +1228,10 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
       return x
 
     return jax.tree.map(_cast, state)
+
+  def _weight_sync_source_state(self) -> Any:
+    """Returns the live model state in the weight-sync dtype."""
+    return self._cast_for_weight_sync(nnx.state(self.model))
 
   @override
   def prepare_weight_sync(self, sync_request: Any = None, **kwargs) -> Any:
@@ -1271,7 +1274,11 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
           reshard_fn=None,
           rollout_engine=backend,
       )
-      worker.bind(converted_state)
+      # The mapped path bypasses _weight_sync_source_state, so apply the same
+      # cast here: raiden pairs tensors by name AND item size, so a float32
+      # master weight staged against a bfloat16 rollout parameter does not
+      # pair up.
+      worker.bind(self._cast_for_weight_sync(converted_state))
     else:
       # TODO(lancewang): Handle LoRA parameter synchronization.
       worker.bind(self._weight_sync_source_state())

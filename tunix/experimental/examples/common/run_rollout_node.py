@@ -58,28 +58,38 @@ def _import_vllm_sampler():
   return vllm_sampler
 
 
-def _stop_token_ids(tokenizer, model_path: str) -> list[int]:
-  """The model's full stop set: tokenizer eos + generation_config eos ids.
+def _stop_token_ids(
+    tokenizer, model_path: str, source: str = "generation_config"
+) -> list[int]:
+  """Stop-token ids for the vanilla sampler.
 
-  Qwen3's generation_config lists `[<|im_end|>, <|endoftext|>]`; vLLM stops on
-  both by default, while the tokenizer's single `eos_token_id` is only
-  `<|im_end|>`. A raw-text prompt is typically finished with `<|endoftext|>`,
-  so stopping on the tokenizer eos alone runs every completion to the length
-  limit and the agentic engine clips it without scoring.
+  ``tokenizer``: the tokenizer's single ``eos_token_id`` -- what
+  ``examples/math_gsm8k/qwen3_grpo_demo.py`` passes to its vanilla rollout
+  (``eos_tokens=[<|im_end|>]`` for Qwen3).
+
+  ``generation_config``: tokenizer eos plus the model's ``generation_config``
+  eos ids -- what the same demo gets from its default vLLM rollout, since vLLM
+  merges ``generation_config.eos_token_id`` into ``stop_token_ids``
+  (``[<|im_end|>, <|endoftext|>]`` for Qwen3). A raw-text prompt is usually
+  finished with ``<|endoftext|>``, so the tokenizer eos alone runs every
+  completion to the length budget and the collect engine clips it unscored.
   """
   ids: list[int] = []
   if getattr(tokenizer, "eos_token_id", None) is not None:
     ids.append(int(tokenizer.eos_token_id))
-  try:
-    from transformers import GenerationConfig  # pylint: disable=g-import-not-at-top
+  if source == "generation_config":
+    try:
+      from transformers import GenerationConfig  # pylint: disable=g-import-not-at-top
 
-    cfg_eos = GenerationConfig.from_pretrained(model_path).eos_token_id
-    for t in cfg_eos if isinstance(cfg_eos, (list, tuple)) else [cfg_eos]:
-      if t is not None and int(t) not in ids:
-        ids.append(int(t))
-  except Exception:  # pylint: disable=broad-exception-caught
-    logging.info("No generation_config eos ids for %s; using tokenizer eos.", model_path)
-  logging.info("Sampler stop token ids: %s", ids)
+      cfg_eos = GenerationConfig.from_pretrained(model_path).eos_token_id
+      for t in cfg_eos if isinstance(cfg_eos, (list, tuple)) else [cfg_eos]:
+        if t is not None and int(t) not in ids:
+          ids.append(int(t))
+    except Exception:  # pylint: disable=broad-exception-caught
+      logging.info(
+          "No generation_config eos ids for %s; using tokenizer eos.", model_path
+      )
+  logging.info("Vanilla sampler stop token ids (%s): %s", source, ids)
   return ids
 
 
@@ -145,6 +155,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       help=(
           "Override MaxText inference attention kernel (e.g."
           " vllm_batched_rpa)."
+      ),
+  )
+  parser.add_argument(
+      "--stop_tokens",
+      type=str,
+      default=os.getenv("STOP_TOKENS", "generation_config"),
+      choices=["generation_config", "tokenizer"],
+      help=(
+          "Vanilla-sampler stop set. generation_config: tokenizer eos +"
+          " generation_config eos ids (what vLLM stops on natively);"
+          " tokenizer: the tokenizer's single eos, as qwen3_grpo_demo.py's"
+          " vanilla rollout uses."
       ),
   )
   parser.add_argument(
@@ -279,7 +301,9 @@ def _create_vanilla_worker(args, tokenizer):
       tokenizer=tokenizer,
       cache_config=args.max_prompt_length + args.max_response_length,
       config=config,
-      eos_tokens=_stop_token_ids(tokenizer, args.model_dir or args.model_id),
+      eos_tokens=_stop_token_ids(
+          tokenizer, args.model_dir or args.model_id, args.stop_tokens
+      ),
   )
 
   rollout_tokenizer = tokenizer_adapter_lib.TokenizerAdapter(tokenizer)
@@ -405,6 +429,16 @@ def _create_inprocess_vllm_sampler(args, tokenizer):
           "max_model_len": max_model_len,
       },
   )
+  # No stop-token override for vLLM: like the demo's vLLM rollout, vLLM itself
+  # merges the model's generation_config eos ids into stop_token_ids, so the
+  # "generation_config" set is its native behaviour and a tokenizer-only set
+  # cannot be enforced without ignore_eos.
+  if args.stop_tokens != "generation_config":
+    logging.warning(
+        "--stop_tokens=%s is only honoured by the vanilla sampler; vLLM stops"
+        " on the model's generation_config eos ids regardless.",
+        args.stop_tokens,
+    )
   sampler_adapter = inprocess_vllm_sampler_adapter.InprocessVllmSamplerAdapter(
       server_id=args.worker_id,
       tokenizer=tokenizer,

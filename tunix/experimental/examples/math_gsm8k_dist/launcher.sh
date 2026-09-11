@@ -69,6 +69,7 @@ USE_ROLLOUT_LOGPS=${USE_ROLLOUT_LOGPS:-true}
 # non-experimental qwen3_grpo_demo does (its VTC template ends with an opened
 # <reasoning> tag that the model is meant to continue).
 CHAT_PARSER=${CHAT_PARSER:-auto}
+STOP_TOKENS=${STOP_TOKENS:-generation_config}
 # 0/0 keeps a constant LR; qwen3_grpo_demo uses warmup 50 / decay 500.
 WARMUP_STEPS=${WARMUP_STEPS:-0}
 LR_DECAY_STEPS=${LR_DECAY_STEPS:-0}
@@ -538,6 +539,7 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
     --lora_alpha="$LORA_ALPHA"
     --weight_sync_mode="$WEIGHT_SYNC_MODE"
     --chat_parser="$CHAT_PARSER"
+    --stop_tokens="$STOP_TOKENS"
   )
   if [[ -n "$MAXTEXT_MODEL_NAME" ]]; then
     ROLLOUT_CMD+=( --maxtext_model_name="$MAXTEXT_MODEL_NAME" )

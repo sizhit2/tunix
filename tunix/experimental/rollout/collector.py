@@ -200,6 +200,15 @@ class TrajectoryCollectorEngine:
         dtype=np.int32,
     )
     metadata["reward"] = float(getattr(rl_traj, "reward", 0.0) or 0.0)
+    # The collect engine's terminal status (SUCCEEDED, MAX_CONTEXT_LIMIT_REACHED,
+    # TIMEOUT, ...) is the source of truth for "was this trajectory cut off";
+    # carry it across so the orchestrator's metrics consume it instead of
+    # re-deriving it from token lengths.
+    rl_status = getattr(rl_traj, "status", None)
+    if rl_status is not None:
+      # `Trajectory` (extra="forbid") has no status field; `extra` is the
+      # wire-safe carrier `RolloutResponse.from_trajectory` reads it from.
+      metadata["status"] = getattr(rl_status, "name", str(rl_status))
     trajectory = trajectory_lib.Trajectory(
         trajectory_id=self.traj_id,
         agent=trajectory_lib.Agent(

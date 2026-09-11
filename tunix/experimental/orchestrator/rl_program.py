@@ -111,7 +111,6 @@ class StandardRLProgram(RLProgram):
       mode: Mode | str = Mode.TRAIN,
       on_step_begin: Callable[[int], None] | None = None,
       on_step_end: Callable[[int, Any], None] | None = None,
-      eos_ids: Sequence[int] | None = None,
   ):
     super().__init__()
     self.engine: rl_engine_interface.AbstractRLEngine | None = None
@@ -120,10 +119,6 @@ class StandardRLProgram(RLProgram):
     self.dataset = dataset
     self.max_steps = max_steps
     self.algo = algo
-    # Stop-token ids, used only for `generation/completions/clip_ratio`: a
-    # completion that fills the response budget without ending on one of these
-    # was cut off by the length limit (the AgenticGRPOLearner definition).
-    self.eos_ids = [int(t) for t in eos_ids] if eos_ids else None
     algo_max_response_length = getattr(self.algo, "max_response_length", 1024)
     if generation_args is None:
       self.generation_args = datatypes.GenerationArgs(
@@ -384,7 +379,6 @@ class StandardRLProgram(RLProgram):
     successes = []
     staleness_list = []
     clipped_flags = []
-    max_response_length = getattr(self.generation_args, "max_response_length", None)
     for item in all_step_items:
       p_len = None
       prompt_tokens = getattr(item, "prompt_tokens", None)
@@ -418,14 +412,6 @@ class StandardRLProgram(RLProgram):
         prompt_lengths.append(p_len)
       if c_len is not None:
         completion_lengths.append(c_len)
-        if max_response_length is not None:
-          last_token = None
-          if completion_tokens is not None and c_len > 0:
-            last_token = int(np.asarray(completion_tokens).reshape(-1)[-1])
-          ended_on_eos = self.eos_ids is not None and last_token in self.eos_ids
-          clipped_flags.append(
-              1.0 if (c_len >= max_response_length and not ended_on_eos) else 0.0
-          )
       if p_len is not None and c_len is not None:
         total_lengths.append(p_len + c_len)
 
@@ -438,15 +424,18 @@ class StandardRLProgram(RLProgram):
           item, "status", None
       )
       if status is not None:
-        if isinstance(status, datatypes.TrajectoryStatus):
-          if status != datatypes.TrajectoryStatus.RUNNING:
-            is_succ = status == datatypes.TrajectoryStatus.SUCCEEDED
-            successes.append(1.0 if is_succ else 0.0)
-        elif isinstance(status, str):
-          status_str = status.upper()
-          if status_str != "RUNNING":
-            is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
-            successes.append(1.0 if is_succ else 0.0)
+        # Terminal status as reported by the trajectory collect engine. A
+        # trajectory whose response-token budget ran out is
+        # MAX_CONTEXT_LIMIT_REACHED (the engine stops it there and skips
+        # env.step), which is what `generation/completions/clip_ratio` counts;
+        # it is not re-derived from token lengths or stop ids here.
+        status_str = str(getattr(status, "name", status)).upper()
+        if status_str != "RUNNING":
+          is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
+          successes.append(1.0 if is_succ else 0.0)
+          clipped_flags.append(
+              1.0 if status_str == "MAX_CONTEXT_LIMIT_REACHED" else 0.0
+          )
 
       # Batch ingestion staleness: consumed_policy_version - item.policy_version
       pol_ver = getattr(item, "policy_version", None)

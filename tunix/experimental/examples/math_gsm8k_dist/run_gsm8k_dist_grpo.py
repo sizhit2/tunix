@@ -304,18 +304,6 @@ def main(argv: list[str], context: ProcessContext | None = None) -> None:
     tokenizer.pad_token = tokenizer.eos_token
   pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
   eos_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else pad_id
-  # The model's full stop set (tokenizer eos + generation_config eos ids), for
-  # the clip_ratio metric. Qwen3 lists [<|im_end|>, <|endoftext|>].
-  stop_ids = [int(eos_id)]
-  try:
-    from transformers import GenerationConfig  # pylint: disable=g-import-not-at-top
-
-    cfg_eos = GenerationConfig.from_pretrained(tokenizer_path).eos_token_id
-    for t in cfg_eos if isinstance(cfg_eos, (list, tuple)) else [cfg_eos]:
-      if t is not None and int(t) not in stop_ids:
-        stop_ids.append(int(t))
-  except Exception:  # pylint: disable=broad-exception-caught
-    pass
   logging.info(
       "Loaded tokenizer from %s (vocab_size=%d, pad_id=%d, eos_id=%d).",
       tokenizer_path,
@@ -389,7 +377,6 @@ def main(argv: list[str], context: ProcessContext | None = None) -> None:
       metrics_logging_options=metrics_logging_options,
       max_staleness=args.max_staleness,
       sync_weights=(args.weight_sync_mode != "none"),
-      eos_ids=stop_ids,
       on_step_begin=lambda step: logging.info(
           ">>> Step %d starting | Policy Version: %d",
           step,
