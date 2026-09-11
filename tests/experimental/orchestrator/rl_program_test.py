@@ -2781,34 +2781,112 @@ class RLProgramTest(absltest.TestCase):
 
   # --- Sampler/trainer agreement (Phase 4) ---
 
-  def test_sampler_trainer_agreement_skipped_when_use_rollout_logps_false(self):
-    """When use_rollout_logps is False, agreement is skipped even with old logps."""
+  def _resolve_case(self, *, algo_flags, rollout_logps, trainer_logps=None):
+    """Runs _resolve_old_per_token_logps once; returns (batch, acc, calls)."""
 
     async def _run():
-      self.mock_algo.use_rollout_logps = False
-      payload_with_old_logps = datatypes.RLTrainerPayload(
-          prompt_ids=np.array([1, 2], dtype=np.int32),
-          prompt_mask=np.array([1, 1], dtype=np.float32),
-          completion_ids=np.array([3, 4], dtype=np.int32),
-          completion_mask=np.array([1, 1], dtype=np.float32),
-          advantages=np.array([1.0, 1.0], dtype=np.float32),
-          old_per_token_logps=np.array([-0.5, -0.2], dtype=np.float32),
+      for name, value in algo_flags.items():
+        setattr(self.mock_algo, name, value)
+      program = self._create_program()
+      program.engine = mock.MagicMock()
+      program.engine.per_token_logps = mock.AsyncMock(
+          return_value=datatypes.LogprobsResponse(
+              per_token_logps=(
+                  trainer_logps
+                  if trainer_logps is not None
+                  else np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
+              ),
+              model_version=1,
+          )
       )
-      self.mock_algo.create_trainer_payloads.return_value = [
-          payload_with_old_logps,
-          payload_with_old_logps,
-      ]
-      _set_mock_poll_batches(self.mock_engine, _make_trajectory_group(), [])
-      program = self._create_program(
-          dataset=["prompt_data_0"], max_steps=1, mini_batch_size=1
+      batch = datatypes.RLTrainerPayload(
+          prompt_ids=np.array([[1, 2]], dtype=np.int32),
+          prompt_mask=np.array([[1, 1]], dtype=np.float32),
+          completion_ids=np.array([[3, 4, 5]], dtype=np.int32),
+          completion_mask=np.array([[1, 1, 1]], dtype=np.float32),
+          advantages=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+          old_per_token_logps=rollout_logps,
       )
-      await program.run_async(self.mock_engine)
-      self.mock_engine.per_token_logps.assert_not_called()
+      acc: dict[str, Any] = {}
+      out = await program._resolve_old_per_token_logps(batch, acc)
+      return out, acc, program.engine.per_token_logps.await_count, program
 
-    asyncio.run(_run())
+    return asyncio.run(_run())
 
-  def test_sampler_trainer_agreement_triggered_in_train_stage(self):
-    """When use_rollout_logps is True and old_per_token_logps present, agreement runs."""
+  def test_use_rollout_logps_true_keeps_rollout_logps_and_logs_agreement(self):
+    """Default: ratio against the sampler; trainer forward only for metrics."""
+    rollout = np.array([[-0.4, -1.2, -0.1]], dtype=np.float32)
+    out, acc, calls, program = self._resolve_case(
+        algo_flags=dict(use_rollout_logps=True), rollout_logps=rollout
+    )
+    self.assertEqual(calls, 1)
+    req = program.engine.per_token_logps.await_args.kwargs["items"]
+    self.assertIsInstance(req, datatypes.LogprobsRequest)
+    self.assertEqual(req.model_role, "actor")
+    self.assertEqual(req.pad_id, program.batch_config.pad_id)
+    np.testing.assert_allclose(np.asarray(out.old_per_token_logps), rollout)
+    self.assertIsNone(out.sampler_is_weights)
+    _, diff_mean_vals = acc["sampler_trainer/logp_diff_mean"]
+    self.assertAlmostEqual(diff_mean_vals[0], 0.4 / 3, places=5)
+    self.assertIn("sampler_trainer/probs_pearson_corr", acc)
+
+  def test_use_rollout_logps_false_rescores_with_trainer(self):
+    """The demo's setting: old := trainer re-score; nothing to compare."""
+    trainer = np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
+    out, acc, calls, _ = self._resolve_case(
+        algo_flags=dict(use_rollout_logps=False), rollout_logps=None
+    )
+    self.assertEqual(calls, 1)
+    np.testing.assert_allclose(np.asarray(out.old_per_token_logps), trainer)
+    self.assertIsNone(out.sampler_is_weights)
+    self.assertEqual(acc, {})
+
+  def test_use_rollout_logps_false_with_agreement_logging(self):
+    """Same ratio source; the carried rollout logps yield sampler_trainer/*."""
+    trainer = np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
+    out, acc, calls, _ = self._resolve_case(
+        algo_flags=dict(
+            use_rollout_logps=False, log_sampler_trainer_agreement=True
+        ),
+        rollout_logps=np.array([[-0.4, -1.2, -0.1]], dtype=np.float32),
+    )
+    self.assertEqual(calls, 1)
+    np.testing.assert_allclose(np.asarray(out.old_per_token_logps), trainer)
+    self.assertIn("sampler_trainer/logp_diff_mean", acc)
+
+  def test_force_on_policy_ratio_pins_ratio_and_can_buy_diagnostics(self):
+    """Pinned ratio: the loss sees no old logps; diagnostics are opt-in."""
+    out, acc, calls, _ = self._resolve_case(
+        algo_flags=dict(force_on_policy_ratio=True), rollout_logps=None
+    )
+    self.assertEqual(calls, 0)
+    self.assertIsNone(out.old_per_token_logps)
+    self.assertEqual(acc, {})
+    out, acc, calls, _ = self._resolve_case(
+        algo_flags=dict(
+            force_on_policy_ratio=True, log_sampler_trainer_agreement=True
+        ),
+        rollout_logps=np.array([[-0.4, -1.2, -0.1]], dtype=np.float32),
+    )
+    self.assertEqual(calls, 1)
+    self.assertIsNone(out.old_per_token_logps)
+    self.assertIn("sampler_trainer/logp_diff_mean", acc)
+
+  def test_sampler_is_token_feeds_weights_and_trainer_logps(self):
+    """TIS: weights from the sampler/trainer ratio, old := trainer logps."""
+    trainer = np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
+    out, acc, calls, _ = self._resolve_case(
+        algo_flags=dict(sampler_is="token", sampler_is_threshold=2.0),
+        rollout_logps=np.array([[-0.4, -1.2, -0.1]], dtype=np.float32),
+    )
+    self.assertEqual(calls, 1)
+    self.assertIsNotNone(out.sampler_is_weights)
+    np.testing.assert_allclose(np.asarray(out.old_per_token_logps), trainer)
+    self.assertIn("sampler_is/weight_mean", acc)
+    self.assertIn("sampler_is/frac_clipped_at_threshold", acc)
+
+  def test_train_stage_resolves_old_logps_and_logs_agreement(self):
+    """End to end: the resolver runs per micro-batch inside train_stage."""
 
     async def _run():
       self.mock_algo.use_rollout_logps = True
@@ -2824,6 +2902,7 @@ class RLProgramTest(absltest.TestCase):
           payload_with_old_logps,
           payload_with_old_logps,
       ]
+
       async def _fake_per_token_logps(role, *, items, **kwargs):
         del role, kwargs
         return datatypes.LogprobsResponse(
@@ -2851,83 +2930,6 @@ class RLProgramTest(absltest.TestCase):
           0.15,
           places=5,
       )
-
-    asyncio.run(_run())
-
-  def test_apply_sampler_trainer_agreement_records_metrics(self):
-    """Helper scores actor logps and records namespaced agreement metrics."""
-
-    async def _run():
-      program = self._create_program()
-      trainer_logps = np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
-      program.engine = mock.MagicMock()
-      program.engine.per_token_logps = mock.AsyncMock(
-          return_value=datatypes.LogprobsResponse(
-              per_token_logps=trainer_logps, model_version=1
-          )
-      )
-      batch = datatypes.RLTrainerPayload(
-          prompt_ids=np.array([[1, 2]], dtype=np.int32),
-          prompt_mask=np.array([[1, 1]], dtype=np.float32),
-          completion_ids=np.array([[3, 4, 5]], dtype=np.int32),
-          completion_mask=np.array([[1, 1, 1]], dtype=np.float32),
-          advantages=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
-          old_per_token_logps=np.array([[-0.4, -1.2, -0.1]], dtype=np.float32),
-      )
-      acc: dict[str, Any] = {}
-      out = await program._apply_sampler_trainer_agreement(batch, acc)
-
-      program.engine.per_token_logps.assert_awaited_once()
-      await_args = program.engine.per_token_logps.await_args
-      self.assertEqual(await_args.args[0], datatypes.Role.ACTOR)
-      req = await_args.kwargs["items"]
-      self.assertIsInstance(req, datatypes.LogprobsRequest)
-      self.assertEqual(req.model_role, "actor")
-      self.assertEqual(req.pad_id, program.batch_config.pad_id)
-      self.assertIn("sampler_trainer/logp_diff_mean", acc)
-      _, diff_mean_vals = acc["sampler_trainer/logp_diff_mean"]
-      self.assertAlmostEqual(diff_mean_vals[0], 0.4 / 3, places=5)
-      self.assertIn("sampler_trainer/probs_pearson_corr", acc)
-      # sampler_is is None -> no batch mutation, no TIS weights.
-      self.assertIs(out, batch)
-      self.assertIsNone(out.sampler_is_weights)
-
-    asyncio.run(_run())
-
-  def test_apply_sampler_trainer_agreement_token_is_feeds_weights(self):
-    """With sampler_is='token' the helper feeds TIS weights and trainer logps."""
-
-    async def _run():
-      self.mock_algo.sampler_is = "token"
-      self.mock_algo.sampler_is_threshold = 2.0
-      program = self._create_program()
-      self.assertEqual(program.sampler_is, "token")
-      self.assertEqual(program.sampler_is_threshold, 2.0)
-      trainer_logps = np.array([[-0.5, -1.0, -0.2]], dtype=np.float32)
-      program.engine = mock.MagicMock()
-      program.engine.per_token_logps = mock.AsyncMock(
-          return_value=datatypes.LogprobsResponse(
-              per_token_logps=trainer_logps, model_version=1
-          )
-      )
-      batch = datatypes.RLTrainerPayload(
-          prompt_ids=np.array([[1, 2]], dtype=np.int32),
-          prompt_mask=np.array([[1, 1]], dtype=np.float32),
-          completion_ids=np.array([[3, 4, 5]], dtype=np.int32),
-          completion_mask=np.array([[1, 1, 1]], dtype=np.float32),
-          advantages=np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
-          old_per_token_logps=np.array([[-0.4, -1.2, -0.1]], dtype=np.float32),
-      )
-      acc: dict[str, Any] = {}
-      out = await program._apply_sampler_trainer_agreement(batch, acc)
-
-      self.assertIsNotNone(out.sampler_is_weights)
-      # old_per_token_logps is overwritten with the trainer logps.
-      np.testing.assert_allclose(
-          np.asarray(out.old_per_token_logps), trainer_logps
-      )
-      self.assertIn("sampler_is/weight_mean", acc)
-      self.assertIn("sampler_is/frac_clipped_at_threshold", acc)
 
     asyncio.run(_run())
 

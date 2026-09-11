@@ -204,10 +204,50 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       action=argparse.BooleanOptionalAction,
       default=True,
       help=(
-          "Use rollout sampler log-probs as old_per_token_logps (off-policy /"
-          " sampler importance ratio). Default True matches the"
-          " non-experimental GRPOConfig; pass --no-use_rollout_logps for"
-          " on-policy ratio=1."
+          "Use rollout sampler log-probs as old_per_token_logps. Default True"
+          " matches the non-experimental GRPOConfig; --no-use_rollout_logps"
+          " re-scores with the trainer before the update instead"
+          " (qwen3_grpo_demo.py's setting)."
+      ),
+  )
+  parser.add_argument(
+      "--force_on_policy_ratio",
+      action=argparse.BooleanOptionalAction,
+      default=False,
+      help=(
+          "Send no old_per_token_logps to the loss; the surrogate ratio is"
+          " pinned to 1.0 (stop_gradient of the current logps). Mirrors"
+          " AgenticGRPOLearner.force_on_policy_ratio."
+      ),
+  )
+  parser.add_argument(
+      "--sampler_is",
+      type=str,
+      default=os.getenv("SAMPLER_IS", "") or None,
+      choices=[None, "token"],
+      help=(
+          "'token': clipped token-level importance weights from the"
+          " sampler/trainer logp ratio, with the trainer's re-scored logps as"
+          " old_per_token_logps (TIS)."
+      ),
+  )
+  parser.add_argument(
+      "--sampler_is_threshold",
+      type=float,
+      default=2.0,
+      help="Clip value for the token-level importance weights.",
+  )
+  parser.add_argument(
+      "--log_sampler_trainer_agreement",
+      action=argparse.BooleanOptionalAction,
+      default=os.getenv("LOG_SAMPLER_TRAINER_AGREEMENT", "").lower()
+      in ("1", "true", "yes"),
+      help=(
+          "Keep the rollout logps in the payload and log sampler_trainer/*"
+          " even when they are not the PPO ratio's source. Free under"
+          " --no-use_rollout_logps (the trainer forward already runs); costs"
+          " one actor forward per micro-batch under --force_on_policy_ratio."
+          " Mirrors AgenticGRPOLearner.log_sampler_trainer_agreement."
       ),
   )
   parser.add_argument(
@@ -233,6 +273,10 @@ def _build_algo(args: argparse.Namespace) -> algorithm_adapter.GRPOAdapter:
       beta_kl=args.beta,
       temperature=args.temperature,
       use_rollout_logps=args.use_rollout_logps,
+      force_on_policy_ratio=args.force_on_policy_ratio,
+      sampler_is=args.sampler_is,
+      sampler_is_threshold=args.sampler_is_threshold,
+      log_sampler_trainer_agreement=args.log_sampler_trainer_agreement,
   )
 
 
