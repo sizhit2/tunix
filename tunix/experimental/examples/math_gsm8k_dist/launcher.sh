@@ -65,6 +65,10 @@ WANDB_API_KEY=${WANDB_API_KEY:-}
 SAMPLER=${SAMPLER:-inprocess_vllm}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-none}
 USE_ROLLOUT_LOGPS=${USE_ROLLOUT_LOGPS:-true}
+# auto: model-family chat template; raw: verbatim prompt text, as
+# examples/math_gsm8k/qwen3_grpo_demo.py does (its VTC template ends with an
+# opened <reasoning> tag that the model is meant to continue).
+CHAT_PARSER=${CHAT_PARSER:-auto}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
 # not a clean failure: Raiden pairs tensors by exact name, so a MaxText trainer
@@ -510,6 +514,7 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
     --lora_rank="$LORA_RANK"
     --lora_alpha="$LORA_ALPHA"
     --weight_sync_mode="$WEIGHT_SYNC_MODE"
+    --chat_parser="$CHAT_PARSER"
   )
   if [[ -n "$MAXTEXT_MODEL_NAME" ]]; then
     ROLLOUT_CMD+=( --maxtext_model_name="$MAXTEXT_MODEL_NAME" )
