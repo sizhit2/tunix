@@ -140,8 +140,10 @@ class AlgorithmAdapter(abc.ABC):
     self.has_critic = False
     self.requires_old_logprobs = False
     self.use_rollout_logps: bool = True
+    self.force_on_policy_ratio: bool = False
     self.sampler_is: str | None = None
     self.sampler_is_threshold: float = 2.0
+    self.log_sampler_trainer_agreement: bool = False
 
   @abc.abstractmethod
   def compute_advantages(
@@ -196,9 +198,42 @@ class GRPOAdapter(AlgorithmAdapter):
       kl_loss_mode: str = "mse_kl",
       kl_clamp_value: float | None = None,
       use_rollout_logps: bool = True,
+      force_on_policy_ratio: bool = False,
       sampler_is: str | None = None,
       sampler_is_threshold: float = 2.0,
+      log_sampler_trainer_agreement: bool = False,
   ):
+    """GRPO adapter.
+
+    The old-logps source is resolved in `StandardRLProgram.train_stage` the
+    way `tunix/rl/grpo/grpo_learner.py` (and `AgenticGRPOLearner`) do it; the
+    adapter only decides whether the rollout engine's per-token log-probs
+    travel in the payload at all. That decision is made once per adapter,
+    never per trajectory, so every trainer payload has the same pytree
+    structure and the jitted step compiles once.
+
+    Args:
+      use_rollout_logps: True: the PPO ratio is taken against the sampler's
+        log-probs. False: the trainer re-scores the completions under its
+        live weights before the update and uses that as `old_per_token_logps`
+        (one extra actor forward per micro-batch; the demo's default).
+      force_on_policy_ratio: Send no `old_per_token_logps` to the loss, which
+        then uses `stop_gradient(current_logps)` (`tunix/rl/algo_core.py`),
+        pinning the surrogate ratio to 1.0 so clipping never fires. Mirrors
+        `AgenticGRPOLearner.force_on_policy_ratio`; overrides
+        `use_rollout_logps`.
+      sampler_is: "token": clipped token-level importance weights from the
+        sampler/trainer log-prob ratio (TIS), with the trainer's re-scored
+        logps as `old_per_token_logps`; needs the rollout logps.
+      sampler_is_threshold: Clip value for the TIS weights.
+      log_sampler_trainer_agreement: Keep the rollout logps in the payload
+        even when they are not the ratio's source, so `sampler_trainer/*`
+        (and, with `sampler_is`, `sampler_is/*`) can be logged. Under
+        `use_rollout_logps=False` the trainer forward is already being paid
+        for, so this costs nothing extra; under `force_on_policy_ratio` it
+        buys that forward back purely for diagnostics (mirrors
+        `AgenticGRPOLearner.log_sampler_trainer_agreement`).
+    """
     if group_size <= 1:
       raise ValueError(
           f"group_size must be greater than 1 for GRPO. Received: {group_size}"
@@ -228,8 +263,19 @@ class GRPOAdapter(AlgorithmAdapter):
     self.kl_clamp_value = kl_clamp_value
     self.requires_reference_kl = beta_kl != 0.0
     self.use_rollout_logps = use_rollout_logps
+    self.force_on_policy_ratio = force_on_policy_ratio
     self.sampler_is = sampler_is
     self.sampler_is_threshold = sampler_is_threshold
+    self.log_sampler_trainer_agreement = log_sampler_trainer_agreement
+    # Whether the rollout engine's logps ride along in every payload. Anything
+    # that consumes them -- the ratio, TIS weights, or the agreement metrics --
+    # requires them; otherwise they are dropped so the payload structure does
+    # not depend on what the sampler happened to return.
+    self.carry_rollout_logps = (
+        (use_rollout_logps and not force_on_policy_ratio)
+        or sampler_is == "token"
+        or log_sampler_trainer_agreement
+    )
 
   def compute_advantages(
       self,
@@ -271,11 +317,31 @@ class GRPOAdapter(AlgorithmAdapter):
           else np.zeros(0, dtype=np.int32)
       )
       seq_adv = np.full(len(c_arr), adv_val, dtype=np.float32)
-      old_lp = (
-          _extract_old_logps(item, len(c_arr))
-          if self.use_rollout_logps
-          else None
-      )
+      # Presence of old_per_token_logps is a per-adapter decision, not a
+      # per-row one: a row that silently drops it would flip the payload's
+      # pytree structure (PaddedBatchAssembler only emits an optional field
+      # when every row in the chunk carries it), and each structure variant is
+      # a separate XLA compile of the trainer step. So when rollout logps are
+      # carried, a missing row is an error, the same way grpo_learner.py
+      # refuses to proceed without them. The field holds the *rollout* logps
+      # here; StandardRLProgram.train_stage decides what the loss finally sees
+      # as old_per_token_logps.
+      old_lp = None
+      if self.carry_rollout_logps:
+        old_lp = _extract_old_logps(item, len(c_arr))
+        if old_lp is None and len(c_arr) == 0:
+          # An empty completion has no tokens to score; keep the field present
+          # (length 0) so the structure matches the rest of the batch.
+          old_lp = np.zeros(0, dtype=np.float32)
+        if old_lp is None:
+          raise ValueError(
+              "rollout logps are required by the GRPOAdapter config but"
+              f" trajectory {getattr(item, 'traj_id', i)!r} carries none for"
+              f" {len(c_arr)} completion tokens. Fix the sampler's logprob"
+              " output, or train without them via use_rollout_logps=False /"
+              " force_on_policy_ratio=True (and no"
+              " log_sampler_trainer_agreement)."
+          )
       payload = datatypes.RLTrainerPayload(
           prompt_ids=p_arr,
           prompt_mask=np.ones(len(p_arr), dtype=np.float32),
@@ -309,6 +375,7 @@ class GRPOAdapter(AlgorithmAdapter):
         kl_loss_mode=self.kl_loss_mode,
         kl_clamp_value=self.kl_clamp_value,
         use_rollout_logps=self.use_rollout_logps,
+        force_on_policy_ratio=self.force_on_policy_ratio,
         sampler_is=self.sampler_is,
         sampler_is_threshold=self.sampler_is_threshold,
     )

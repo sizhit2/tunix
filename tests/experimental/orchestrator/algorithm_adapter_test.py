@@ -53,7 +53,10 @@ class AlgorithmAdapterTest(absltest.TestCase):
       algorithm_adapter.GRPOAdapter(group_size=0)
 
   def test_grpo_create_trainer_payloads(self):
-    adapter = algorithm_adapter.GRPOAdapter(group_size=2)
+    adapter = algorithm_adapter.GRPOAdapter(
+        # Not about rollout logps: the items carry none.
+        group_size=2, use_rollout_logps=False
+    )
     item1 = datatypes.TrajectoryItem(
         group_index=0,
         prompt_id="g1",
@@ -120,6 +123,13 @@ class AlgorithmAdapterTest(absltest.TestCase):
         },
     )
 
+    # Presence of old_per_token_logps is decided per adapter, never per row:
+    # a row without logps while the config needs them is an error rather
+    # than a silently different payload structure (a separate XLA compile).
+    with self.assertRaisesRegex(ValueError, "carries none"):
+      adapter.create_trainer_payloads([item1, item2], rewards=[1.0, 2.0])
+
+    item2.traj["old_logprobs"] = np.array([-0.1, -0.4], dtype=np.float32)
     payloads = adapter.create_trainer_payloads(
         [item1, item2], rewards=[1.0, 2.0]
     )
@@ -128,6 +138,20 @@ class AlgorithmAdapterTest(absltest.TestCase):
         payloads[0].old_per_token_logps,
         np.array([-0.5, -0.2], dtype=np.float32),
     )
+    np.testing.assert_allclose(
+        payloads[1].old_per_token_logps,
+        np.array([-0.1, -0.4], dtype=np.float32),
+    )
+
+    # force_on_policy_ratio never carries the field, even when rows have it.
+    pinned = algorithm_adapter.GRPOAdapter(
+        group_size=2, force_on_policy_ratio=True
+    )
+    self.assertFalse(pinned.carry_rollout_logps)
+    payloads = pinned.create_trainer_payloads(
+        [item1, item2], rewards=[1.0, 2.0]
+    )
+    self.assertIsNone(payloads[0].old_per_token_logps)
     self.assertIsNone(payloads[1].old_per_token_logps)
 
   def test_grpo_create_trainer_payloads_with_disabled_rollout_logps(self):
@@ -162,6 +186,24 @@ class AlgorithmAdapterTest(absltest.TestCase):
     self.assertLen(payloads, 2)
     self.assertIsNone(payloads[0].old_per_token_logps)
     self.assertIsNone(payloads[1].old_per_token_logps)
+
+    # The rollout logps are still carried when something consumes them for
+    # diagnostics: StandardRLProgram then replaces them with the trainer's
+    # re-score for the ratio and logs sampler_trainer/* off the pair.
+    for kwargs in (
+        dict(use_rollout_logps=False, log_sampler_trainer_agreement=True),
+        dict(force_on_policy_ratio=True, log_sampler_trainer_agreement=True),
+        dict(use_rollout_logps=False, sampler_is="token"),
+    ):
+      carrying = algorithm_adapter.GRPOAdapter(group_size=2, **kwargs)
+      self.assertTrue(carrying.carry_rollout_logps, kwargs)
+      payloads = carrying.create_trainer_payloads(
+          [item1, item2], rewards=[1.0, 2.0]
+      )
+      np.testing.assert_allclose(
+          payloads[0].old_per_token_logps,
+          np.array([-0.5, -0.2], dtype=np.float32),
+      )
 
   def test_grpo_create_trainer_payloads_with_mismatched_logps_length(self):
     adapter = algorithm_adapter.GRPOAdapter(group_size=2)
@@ -337,7 +379,10 @@ class AlgorithmAdapterTest(absltest.TestCase):
     self.assertEqual(algo_config.lam, 0.92)
 
   def test_grpo_with_ref_logps(self):
-    adapter = algorithm_adapter.GRPOAdapter(group_size=2)
+    adapter = algorithm_adapter.GRPOAdapter(
+        # Not about rollout logps: the items carry none.
+        group_size=2, use_rollout_logps=False
+    )
     item1 = datatypes.TrajectoryItem(
         group_index=0,
         prompt_id="g1",
@@ -462,6 +507,9 @@ class AlgorithmAdapterTest(absltest.TestCase):
                   "prompt_tokens": np.zeros(0, dtype=np.int32),
                   "conversation_tokens": np.array([3, 4], dtype=np.int32),
                   "conversation_masks": np.ones(2, dtype=np.float32),
+                  # GRPO's default config carries the rollout logps, and a
+                  # scored completion without them is rejected.
+                  "old_logprobs": np.array([-0.3, -0.7], dtype=np.float32),
               },
           )
           for i in range(g)

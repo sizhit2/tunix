@@ -163,8 +163,6 @@ class StandardRLProgram(RLProgram):
     self.mode = mode if isinstance(mode, Mode) else Mode(mode)
     self.on_step_begin = on_step_begin
     self.on_step_end = on_step_end
-    self.sampler_is = getattr(self.algo, "sampler_is", None)
-    self.sampler_is_threshold = getattr(self.algo, "sampler_is_threshold", 2.0)
     self._in_flight_rollouts = 0
     self._dispatch_capacity: asyncio.Semaphore | None = None
     self._dispatch_done = asyncio.Event()
@@ -694,29 +692,15 @@ class StandardRLProgram(RLProgram):
         "perplexity_val": perplexity_val,
     }
 
-  async def _apply_sampler_trainer_agreement(
-      self,
-      batch: datatypes.RLTrainerPayload,
-      accumulator: dict[str, tuple[Any, list[float]]],
-  ) -> datatypes.RLTrainerPayload:
-    """Records sampler-vs-trainer agreement and feeds TIS weights into a batch.
+  def _algo_flag(self, name: str, default: Any) -> Any:
+    """Reads an algorithm flag from the adapter (or its algo_config)."""
+    algo_config = getattr(self.algo, "algo_config", None)
+    return getattr(self.algo, name, getattr(algo_config, name, default))
 
-    Recomputes per-token log-probs under the trainer's live (actor) weights and
-    compares them against the sampler's recorded ``old_per_token_logps`` to
-    quantify sampler-vs-trainer drift, appending the resulting metrics to
-    ``accumulator`` (keyed by the shared helper's already-namespaced names).
-    When ``sampler_is == "token"`` it also writes truncated importance-sampling
-    weights and overwrites ``old_per_token_logps`` with the trainer logps so the
-    policy loss can correct for off-policy drift, matching the agentic learner.
-
-    Args:
-      batch: The microbatch to score; must carry ``old_per_token_logps``.
-      accumulator: Per-step map of metric name -> (agg_fn, values) to extend.
-
-    Returns:
-      The batch, updated with TIS weights / trainer logps when
-      ``sampler_is == "token"``; otherwise returned unchanged.
-    """
+  async def _actor_per_token_logps(
+      self, batch: datatypes.RLTrainerPayload
+  ) -> np.ndarray:
+    """Re-scores the batch's completions under the trainer's live weights."""
     assert self.engine is not None
     gen_temp = getattr(self.generation_args, "temperature", None)
     logps_req = datatypes.LogprobsRequest(
@@ -732,22 +716,92 @@ class StandardRLProgram(RLProgram):
     trainer_logps = await self.engine.per_token_logps(
         datatypes.Role.ACTOR, items=logps_req
     )
-    trainer_logps = np.asarray(trainer_logps.per_token_logps, dtype=np.float32)
-    sa_metrics, sampler_is_weights = rl_common.sampler_trainer_agreement(
-        batch.old_per_token_logps,
-        trainer_logps,
-        batch.completion_mask,
-        sampler_is=self.sampler_is,
-        sampler_is_threshold=self.sampler_is_threshold,
+    if isinstance(trainer_logps, datatypes.LogprobsResponse):
+      trainer_logps = trainer_logps.per_token_logps
+    return np.asarray(trainer_logps, dtype=np.float32)
+
+  async def _resolve_old_per_token_logps(
+      self,
+      batch: datatypes.RLTrainerPayload,
+      accumulator: dict[str, tuple[Any, list[float]]],
+  ) -> datatypes.RLTrainerPayload:
+    """Picks what the loss sees as `old_per_token_logps`, like grpo_learner.
+
+    On entry `batch.old_per_token_logps` holds the *rollout* engine's logps
+    if the adapter carried them (see `GRPOAdapter.carry_rollout_logps`), else
+    None. Mirrors `tunix/rl/grpo/grpo_learner.py` (rollout / trainer choice,
+    `sampler_is`) plus `AgenticGRPOLearner`'s `force_on_policy_ratio` and
+    `log_sampler_trainer_agreement`:
+
+    * `force_on_policy_ratio`: old := None -> `stop_gradient(current)`,
+      ratio pinned to 1.
+    * `use_rollout_logps=False`: old := trainer re-score (one actor forward).
+    * `use_rollout_logps=True`: old := rollout logps, or the trainer re-score
+      when `sampler_is == "token"`.
+
+    `sampler_trainer/*` (and `sampler_is/*`) are computed whenever both the
+    rollout and the trainer logps are available, and appended to
+    ``accumulator`` (metric name -> (agg_fn, values)). The trainer forward is
+    run when the ratio needs it, when TIS weights need it, or -- for
+    diagnostics only -- when rollout logps are present and either the ratio
+    is not pinned (the agentic default) or `log_sampler_trainer_agreement`
+    asks for it.
+
+    Args:
+      batch: The microbatch to prepare.
+      accumulator: Per-step map of metric name -> (agg_fn, values) to extend.
+
+    Returns:
+      The batch with `old_per_token_logps` (and `sampler_is_weights`) set for
+      the loss.
+    """
+    rollout_logps = batch.old_per_token_logps
+    use_rollout_logps = bool(self._algo_flag("use_rollout_logps", True))
+    force_on_policy_ratio = bool(
+        self._algo_flag("force_on_policy_ratio", False)
     )
-    for name, (value, agg_fn) in sa_metrics.items():
-      accumulator.setdefault(name, (agg_fn, []))[1].append(float(value))
+    sampler_is = self._algo_flag("sampler_is", None)
+    sampler_is_threshold = self._algo_flag("sampler_is_threshold", 2.0)
+    log_agreement = bool(
+        self._algo_flag("log_sampler_trainer_agreement", False)
+    )
+
+    need_trainer_logps = (
+        (not force_on_policy_ratio and not use_rollout_logps)
+        or sampler_is == "token"
+        or (
+            rollout_logps is not None
+            and (not force_on_policy_ratio or log_agreement)
+        )
+    )
+    trainer_logps = None
+    if need_trainer_logps:
+      trainer_logps = await self._actor_per_token_logps(batch)
 
     updates: dict[str, Any] = {}
-    if sampler_is_weights is not None:
-      updates["sampler_is_weights"] = sampler_is_weights
-    if self.sampler_is == "token":
-      updates["old_per_token_logps"] = trainer_logps
+    if rollout_logps is not None and trainer_logps is not None:
+      sa_metrics, sampler_is_weights = rl_common.sampler_trainer_agreement(
+          rollout_logps,
+          trainer_logps,
+          batch.completion_mask,
+          sampler_is=sampler_is,
+          sampler_is_threshold=sampler_is_threshold,
+      )
+      for name, (value, agg_fn) in sa_metrics.items():
+        accumulator.setdefault(name, (agg_fn, []))[1].append(float(value))
+      if sampler_is_weights is not None:
+        updates["sampler_is_weights"] = sampler_is_weights
+
+    if force_on_policy_ratio:
+      old_logps = None
+    elif not use_rollout_logps:
+      old_logps = trainer_logps
+    elif sampler_is == "token" and trainer_logps is not None:
+      old_logps = trainer_logps
+    else:
+      old_logps = rollout_logps
+    if old_logps is not rollout_logps:
+      updates["old_per_token_logps"] = old_logps
     if updates:
       batch = dataclasses.replace(batch, **updates)
     return batch
@@ -821,12 +875,8 @@ class StandardRLProgram(RLProgram):
             )
             batch = batch_assembly.with_ref_per_token_logps(batch, ref_logps)
 
-          if (
-              isinstance(batch, datatypes.RLTrainerPayload)
-              and batch.old_per_token_logps is not None
-              and self.algo.use_rollout_logps
-          ):
-            batch = await self._apply_sampler_trainer_agreement(
+          if isinstance(batch, datatypes.RLTrainerPayload):
+            batch = await self._resolve_old_per_token_logps(
                 batch, step_sampler_agreement
             )
 
