@@ -317,6 +317,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
           " learning rate stays at end_value."
       ),
   )
+  parser.add_argument(
+      "--model_dtype",
+      type=str,
+      default=os.getenv("MODEL_DTYPE", "bfloat16"),
+      help=(
+          "Parameter dtype for the trainer's model. float32 keeps master"
+          " weights the optimizer can actually move: at a learning rate of"
+          " 2e-7 a bfloat16 update is a fraction of one ULP and rounds away."
+          " examples/math_gsm8k/qwen3_grpo_demo.py loads its actor in float32"
+          " and only the reference in bfloat16."
+      ),
+  )
+  parser.add_argument(
+      "--weight_sync_dtype",
+      type=str,
+      default=os.getenv("WEIGHT_SYNC_DTYPE", ""),
+      help=(
+          "Dtype for the weights staged on the weight-sync transport, when it"
+          " differs from the trainer's. Raiden pairs tensors by name AND byte"
+          " width, so a float32 master cannot be staged against a bfloat16"
+          " rollout parameter. Empty means stage as-is."
+      ),
+  )
   parser.add_argument("--use_lora", action="store_true")
   parser.add_argument("--lora_rank", type=int, default=64)
   parser.add_argument("--lora_alpha", type=float, default=64.0)
@@ -493,7 +516,9 @@ def _load_actor_model(args, mesh: Mesh, *, lora: bool):
         "--model_dir is required for JAX trainer weights. Set MODEL_DIR or pass"
         " --model_dir=/path/to/local/safetensors."
     )
-  model = models.create_model(args.model_name, args.model_dir, mesh)
+  model = models.create_model(
+      args.model_name, args.model_dir, mesh, dtype=args.model_dtype
+  )
   if not lora:
     return model
   lora_config = {
@@ -694,6 +719,7 @@ def _create_tunix_trainer_factory(args) -> Any:
       # Orchestrator needs to realign its step/policy_version from the returned
       # metadata.
       resume_from_checkpoint_on_init=False,
+      weight_sync_dtype=args.weight_sync_dtype or None,
   )
   logging.info(
       "PeftTrainer v2 gradient_accumulation_steps=%d "

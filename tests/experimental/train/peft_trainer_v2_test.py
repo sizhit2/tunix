@@ -1378,3 +1378,35 @@ class GradientAccumulatorTest(parameterized.TestCase):
 
 if __name__ == '__main__':
   absltest.main()
+
+
+class WeightSyncDtypeTest(absltest.TestCase):
+  """`weight_sync_dtype` casts only the staged copy, never the live weights."""
+
+  def _trainer(self, weight_sync_dtype):
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    config = peft_trainer_v2.TrainingConfig(
+        eval_every_n_steps=10**9,
+        max_steps=10**9,
+        weight_sync_dtype=weight_sync_dtype,
+    )
+    return peft_trainer_v2.PeftTrainer(model, optax.sgd(1e-3), config)
+
+  def _float_dtypes(self, state):
+    return {
+        str(x.dtype)
+        for x in jax.tree_util.tree_leaves(state)
+        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating)
+    }
+
+  def test_cast_leaves_live_weights_untouched(self):
+    trainer = self._trainer(jnp.bfloat16)
+    live_before = self._float_dtypes(nnx.state(trainer.model))
+    staged = trainer._cast_for_weight_sync(nnx.state(trainer.model))  # pylint: disable=protected-access
+    self.assertEqual(self._float_dtypes(staged), {"bfloat16"})
+    self.assertEqual(self._float_dtypes(nnx.state(trainer.model)), live_before)
+
+  def test_unset_stages_as_is(self):
+    trainer = self._trainer(None)
+    state = nnx.state(trainer.model)
+    self.assertIs(trainer._cast_for_weight_sync(state), state)  # pylint: disable=protected-access
