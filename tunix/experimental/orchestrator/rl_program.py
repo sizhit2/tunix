@@ -463,6 +463,12 @@ class StandardRLProgram(RLProgram):
     total_lengths = []
     turns_list = []
     successes = []
+    # A trajectory the collect engine stopped at the response budget
+    # (MAX_CONTEXT_LIMIT_REACHED) never reaches env.step, so it is never scored
+    # and lands in the batch with reward 0 whatever the answer was. Tracking the
+    # rate separates "the policy has not learned the task" from "the policy is
+    # being cut off before it can answer".
+    clipped_flags = []
     staleness_list = []
     for item in all_step_items:
       p_len = None
@@ -513,15 +519,16 @@ class StandardRLProgram(RLProgram):
       if steps and len(steps) > 0:
         turns_list.append(len(steps))
       if status is not None:
-        if isinstance(status, datatypes.TrajectoryStatus):
-          if status != datatypes.TrajectoryStatus.RUNNING:
-            is_succ = status == datatypes.TrajectoryStatus.SUCCEEDED
-            successes.append(1.0 if is_succ else 0.0)
-        elif isinstance(status, str):
-          status_str = status.upper()
-          if status_str != "RUNNING":
-            is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
-            successes.append(1.0 if is_succ else 0.0)
+        status_str = str(getattr(status, "name", status)).upper()
+        if status_str != "RUNNING":
+          is_succ = status_str in ("COMPLETED", "SUCCEEDED", "SUCCESS")
+          successes.append(1.0 if is_succ else 0.0)
+          clipped_flags.append(
+              1.0
+              if status_str
+              == datatypes.TrajectoryStatus.MAX_CONTEXT_LIMIT_REACHED.name
+              else 0.0
+          )
 
       # Batch ingestion staleness: consumed_policy_version - item.policy_version
       pol_ver = getattr(item, "policy_version", None)
@@ -563,6 +570,14 @@ class StandardRLProgram(RLProgram):
           self.metrics_prefix,
           "rollout/num_turns_mean",
           float(np.mean(turns_list)),
+          self.mode,
+          log_step,
+      )
+    if clipped_flags:
+      self.metrics_logger.log(
+          self.metrics_prefix,
+          "generation/completions/clip_ratio",
+          float(np.mean(clipped_flags)),
           self.mode,
           log_step,
       )
