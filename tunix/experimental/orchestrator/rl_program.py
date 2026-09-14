@@ -774,6 +774,50 @@ class StandardRLProgram(RLProgram):
         "perplexity_val": perplexity_val,
     }
 
+  async def _actor_per_token_logps(
+      self, batch: datatypes.RLTrainerPayload
+  ) -> np.ndarray:
+    """Re-scores a batch's completions under the trainer's live weights."""
+    assert self.engine is not None
+    gen_temp = getattr(self.generation_args, "temperature", None)
+    logps_req = datatypes.LogprobsRequest(
+        prompt_tokens=batch.prompt_ids,
+        completion_tokens=batch.completion_ids,
+        temperature=gen_temp if gen_temp is not None else 1.0,
+        model_role="actor",
+        pad_id=self.batch_config.pad_id,
+        eos_id=getattr(self.assembler, "eos_id", self.batch_config.pad_id),
+        segment_ids=batch.segment_ids,
+        segment_positions=batch.segment_positions,
+    )
+    response = await self.engine.per_token_logps(
+        datatypes.Role.ACTOR, items=logps_req
+    )
+    return np.asarray(response.per_token_logps, dtype=np.float32)
+
+  async def _with_trainer_old_per_token_logps(
+      self, batch: datatypes.RLTrainerPayload
+  ) -> datatypes.RLTrainerPayload:
+    """Sets `old_per_token_logps` from the trainer's own re-score.
+
+    `use_rollout_logps=False` means the ratio is taken against the trainer's
+    log-probs at the start of the step, not against the sampler's -- see
+    `tunix/rl/grpo/grpo_learner.py`, which calls `get_actor_per_token_logps`
+    and assigns the result to `old_per_token_logps`. The adapter leaves the
+    field unset in that mode, and an unset field makes
+    `tunix/rl/algo_core.py` fall back to `stop_gradient(current_logps)`,
+    pinning the surrogate ratio to exactly 1. That is a different algorithm:
+    the PPO clip can never fire and `pg_clipfrac` is identically zero.
+
+    Args:
+      batch: The microbatch about to be trained on.
+
+    Returns:
+      The batch carrying the trainer's re-scored log-probs.
+    """
+    trainer_logps = await self._actor_per_token_logps(batch)
+    return dataclasses.replace(batch, old_per_token_logps=trainer_logps)
+
   async def _apply_sampler_trainer_agreement(
       self,
       batch: datatypes.RLTrainerPayload,
@@ -797,22 +841,7 @@ class StandardRLProgram(RLProgram):
       The batch, updated with TIS weights / trainer logps when
       ``sampler_is == "token"``; otherwise returned unchanged.
     """
-    assert self.engine is not None
-    gen_temp = getattr(self.generation_args, "temperature", None)
-    logps_req = datatypes.LogprobsRequest(
-        prompt_tokens=batch.prompt_ids,
-        completion_tokens=batch.completion_ids,
-        temperature=gen_temp if gen_temp is not None else 1.0,
-        model_role="actor",
-        pad_id=self.batch_config.pad_id,
-        eos_id=getattr(self.assembler, "eos_id", self.batch_config.pad_id),
-        segment_ids=batch.segment_ids,
-        segment_positions=batch.segment_positions,
-    )
-    trainer_logps = await self.engine.per_token_logps(
-        datatypes.Role.ACTOR, items=logps_req
-    )
-    trainer_logps = np.asarray(trainer_logps.per_token_logps, dtype=np.float32)
+    trainer_logps = await self._actor_per_token_logps(batch)
     sa_metrics, sampler_is_weights = rl_common.sampler_trainer_agreement(
         batch.old_per_token_logps,
         trainer_logps,
@@ -967,15 +996,17 @@ class StandardRLProgram(RLProgram):
             )
             batch = batch_assembly.with_ref_per_token_logps(batch, ref_logps)
           algo_config = getattr(self.algo, "algo_config", None)
-          if (
-              isinstance(batch, datatypes.RLTrainerPayload)
-              and batch.old_per_token_logps is not None
-              and algo_config is not None
-              and algo_config.use_rollout_logps
-          ):
-            batch = await self._apply_sampler_trainer_agreement(
-                batch, step_sampler_agreement
-            )
+          if isinstance(batch, datatypes.RLTrainerPayload):
+            if algo_config is not None and not algo_config.use_rollout_logps:
+              batch = await self._with_trainer_old_per_token_logps(batch)
+            elif (
+                batch.old_per_token_logps is not None
+                and algo_config is not None
+                and algo_config.use_rollout_logps
+            ):
+              batch = await self._apply_sampler_trainer_agreement(
+                  batch, step_sampler_agreement
+              )
 
           num_microbatches += 1
           logging.info(

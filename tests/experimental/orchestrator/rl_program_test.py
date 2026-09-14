@@ -3085,27 +3085,59 @@ class RLProgramTest(absltest.TestCase):
 
   # --- Sampler/trainer agreement (Phase 4) ---
 
-  def test_sampler_trainer_agreement_skipped_when_use_rollout_logps_false(self):
-    """When use_rollout_logps is False, agreement is skipped even with old logps."""
+  def test_use_rollout_logps_false_rescores_with_the_trainer(self):
+    """use_rollout_logps=False takes the ratio against the trainer's own logps."""
 
     async def _run():
       self.mock_algo.algo_config.use_rollout_logps = False
-      payload_with_old_logps = datatypes.RLTrainerPayload(
+      payload_without_old_logps = datatypes.RLTrainerPayload(
           prompt_ids=np.array([1, 2], dtype=np.int32),
           prompt_mask=np.array([1, 1], dtype=np.float32),
           completion_ids=np.array([3, 4], dtype=np.int32),
           completion_mask=np.array([1, 1], dtype=np.float32),
           advantages=np.array([1.0, 1.0], dtype=np.float32),
-          old_per_token_logps=np.array([-0.5, -0.2], dtype=np.float32),
+          old_per_token_logps=None,
       )
       self.mock_algo.create_trainer_payloads.return_value = [
-          payload_with_old_logps,
-          payload_with_old_logps,
+          payload_without_old_logps,
+          payload_without_old_logps,
       ]
+
+      async def _fake_per_token_logps(role, *, items, **kwargs):
+        del role, kwargs
+        return datatypes.LogprobsResponse(
+            per_token_logps=np.full_like(
+                items.completion_tokens, -0.5, dtype=np.float32
+            ),
+            model_version=1,
+        )
+
+      self.mock_engine.per_token_logps = mock.AsyncMock(
+          side_effect=_fake_per_token_logps
+      )
       _set_mock_poll_batches(self.mock_engine, _make_trajectory_group(), [])
       program = self._create_program(dataset=["prompt_data_0"])
       await program.run_async(self.mock_engine)
-      self.mock_engine.per_token_logps.assert_not_called()
+
+      # The actor was asked to score the batch ...
+      self.mock_engine.per_token_logps.assert_awaited()
+      self.assertEqual(
+          self.mock_engine.per_token_logps.await_args.args[0],
+          datatypes.Role.ACTOR,
+      )
+      # ... and its answer is what the loss sees as old_per_token_logps, so the
+      # ratio is measured against the trainer instead of being pinned to 1.
+      train_batch = self.mock_engine.train_step.call_args[0][0]
+      self.assertIsNotNone(train_batch.old_per_token_logps)
+      np.testing.assert_allclose(
+          np.asarray(train_batch.old_per_token_logps), -0.5
+      )
+      # No sampler-vs-trainer comparison: there are no rollout logps to compare.
+      self.assertFalse(
+          program.metrics_logger.metric_exists(
+              "", "sampler_trainer/logp_diff_mean", "train"
+          )
+      )
 
     asyncio.run(_run())
 
