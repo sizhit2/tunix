@@ -82,7 +82,16 @@ CHAT_PARSER=${CHAT_PARSER:-auto}
 # Qwen3 chat models close each turn with `<|im_end|>` rather than the
 # tokenizer's default EOS token, so the rollout has to stop on it. Set empty to
 # fall back to the tokenizer's EOS token.
-EOS_TOKENS=${EOS_TOKENS-'<|im_end|>'}
+# Qwen3's generation_config.json lists both ids and vLLM stops on both, but the
+# tokenizer's own eos_token_id is <|im_end|> alone -- the one token this recipe
+# never produces under raw prompting. Measured over 16 raw-prompt completions
+# with only <|im_end|>: 0/16 terminate, 0/16 contain <|im_end|> at all, and
+# 4/16 contain <|endoftext|> mid-stream with a median of 618 further tokens
+# generated after the model had already finished. Those then hit the response
+# budget, so the collect engine marks them MAX_CONTEXT_LIMIT_REACHED and skips
+# env.step: never scored, whatever the answer was. <|im_end|> stays in the set
+# because it is the terminator under CHAT_PARSER=auto.
+EOS_TOKENS=${EOS_TOKENS-'<|im_end|>,<|endoftext|>'}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
 # not a clean failure: Raiden pairs tensors by exact name, so a MaxText trainer
