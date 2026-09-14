@@ -59,6 +59,8 @@ LR_DECAY_STEPS=${LR_DECAY_STEPS:-500}
 WARMUP_STEPS=${WARMUP_STEPS:-$(((LR_DECAY_STEPS + 9) / 10))}
 LORA_RANK=${LORA_RANK:-64}
 LORA_ALPHA=${LORA_ALPHA:-64.0}
+MODEL_DTYPE=${MODEL_DTYPE:-bfloat16}
+WEIGHT_SYNC_DTYPE=${WEIGHT_SYNC_DTYPE:-}
 USE_LORA=${USE_LORA:-0}
 CHECKPOINT_SAVE_INTERVAL_STEPS=${CHECKPOINT_SAVE_INTERVAL_STEPS:-1}
 CHECKPOINT_MAX_TO_KEEP=${CHECKPOINT_MAX_TO_KEEP:-10}
@@ -466,6 +468,8 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --mini_batch_size="$MINI_BATCH_SIZE"
     --num_generations="$NUM_GENERATIONS"
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
+    --model_dtype="$MODEL_DTYPE"
+    --weight_sync_dtype="$WEIGHT_SYNC_DTYPE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --optimizer_opt_chain_type="$OPT_CHAIN_TYPE"
     --optimizer_chain_kwargs="{'max_norm': $MAX_GRAD_NORM}"

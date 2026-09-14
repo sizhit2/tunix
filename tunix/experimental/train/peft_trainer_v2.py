@@ -112,6 +112,12 @@ class TrainingConfig:
   # (final-logits) computation; ``0`` disables chunking.
   compute_logps_chunk_size: int = 0
 
+  # Dtype for the weights staged on the weight-sync transport, when it differs
+  # from the trainer's own. Raiden pairs tensors by name AND byte width
+  # (`TensorMetadata.item_size`), so a float32 master weight cannot be staged
+  # against a bfloat16 rollout parameter. None stages the live state as-is.
+  weight_sync_dtype: Any | None = None
+
   def get_with_default(self, key: str, default: Any) -> Any:
     val = getattr(self, key)
     if val is None:
@@ -1293,6 +1299,26 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     )
     return metadata
 
+  def _cast_for_weight_sync(self, state: Any) -> Any:
+    """Casts a state's floating leaves to `weight_sync_dtype` if it is set.
+
+    A cast produces a fresh copy each round; the synchronizer rebinds it, so
+    the transport always stages the current weights in the destination dtype.
+    Non-floating leaves are left untouched, and the live model state (the
+    master weights the optimizer updates) is never modified.
+    """
+    dtype = self.config.get_with_default("weight_sync_dtype", None)
+    if dtype is None:
+      return state
+    dtype = jnp.dtype(dtype)
+
+    def _cast(x):
+      if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
+        return x.astype(dtype) if x.dtype != dtype else x
+      return x
+
+    return jax.tree.map(_cast, state)
+
   @override
   def prepare_weight_sync(self, sync_request: Any = None, **kwargs) -> Any:
     """Stages this round's weights on the raiden transport, returns metadata."""
@@ -1334,10 +1360,12 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
           reshard_fn=None,
           rollout_engine=backend,
       )
-      worker.bind(converted_state)
+      # The mapped path bypasses the direct bind below, so apply the same
+      # cast here.
+      worker.bind(self._cast_for_weight_sync(converted_state))
     else:
       # TODO(lancewang): Handle LoRA parameter synchronization.
-      worker.bind(nnx.state(self.model))
+      worker.bind(self._cast_for_weight_sync(nnx.state(self.model)))
 
     worker.d2h()
     if os.environ.get("VERIFY_WEIGHTS", "").lower() == "true":
