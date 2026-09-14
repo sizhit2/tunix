@@ -78,7 +78,12 @@ TRAJECTORY_LOG_DIR=${TRAJECTORY_LOG_DIR:-}
 SAMPLER=${SAMPLER:-inprocess_vllm}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-none}
 USE_ROLLOUT_LOGPS=${USE_ROLLOUT_LOGPS:-true}
-CHAT_PARSER=${CHAT_PARSER:-auto}
+# The GSM8K VTC prompt ends with an opened <reasoning> tag for the model to
+# continue. Under a chat template that tag is sealed inside the user turn and
+# an assistant turn is opened after it, so is_vtc_format_correct() can never
+# pass and the graded reward is capped below its top tier. This launcher only
+# runs that recipe, hence raw by default.
+CHAT_PARSER=${CHAT_PARSER:-raw}
 # Qwen3 chat models close each turn with `<|im_end|>` rather than the
 # tokenizer's default EOS token, so the rollout has to stop on it. Set empty to
 # fall back to the tokenizer's EOS token.
