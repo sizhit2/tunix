@@ -42,6 +42,13 @@ MAX_STEPS=${MAX_STEPS:-1}
 TRAIN_MICRO_BATCH_SIZE=${TRAIN_MICRO_BATCH_SIZE:-1}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-2}
 EVAL_EVERY_N_STEPS=${EVAL_EVERY_N_STEPS:-50}
+# Held-out RL eval, run by the orchestrator on a split the policy never trains
+# on. Distinct from EVAL_EVERY_N_STEPS above, which is the trainer's own
+# loss/perplexity eval. 0 disables it.
+RL_EVAL_EVERY_N_STEPS=${RL_EVAL_EVERY_N_STEPS:-0}
+RL_EVAL_BATCH_SIZE=${RL_EVAL_BATCH_SIZE:-64}
+RL_EVAL_TEMPERATURE=${RL_EVAL_TEMPERATURE:-0.0}
+RL_EVAL_SPLIT=${RL_EVAL_SPLIT:-test}
 OPT_CHAIN_TYPE=${OPT_CHAIN_TYPE-clip_by_global_norm}
 MAX_GRAD_NORM=${MAX_GRAD_NORM:-1.0}
 ADAM_B1=${ADAM_B1:-0.9}
@@ -369,7 +376,7 @@ echo "  trajectories:   $((BATCH_SIZE * NUM_GENERATIONS)) per step"
 echo "  batch size:     $BATCH_SIZE"
 echo "  generations:    $NUM_GENERATIONS"
 echo "  max steps:      $MAX_STEPS"
-echo "  eval interval:  $EVAL_EVERY_N_STEPS"
+echo "  eval interval:  $EVAL_EVERY_N_STEPS (trainer loss) / $RL_EVAL_EVERY_N_STEPS (held-out RL eval on $RL_EVAL_SPLIT)"
 echo "  learning rate:  $LEARNING_RATE"
 echo "  lr schedule:    ${SCHEDULE_TYPE:-<constant>} (warmup $WARMUP_STEPS, decay $LR_DECAY_STEPS)"
 echo "  prompt length:  $MAX_PROMPT_LENGTH"
@@ -738,6 +745,10 @@ echo "Launching CPU orchestrator..."
     --flush_metrics_every_n_steps="$FLUSH_METRICS_EVERY_N_STEPS"
     --tfds_data_dir="$TFDS_DATA_DIR"
     --tfds_split="$TFDS_SPLIT"
+    --eval_every_n_steps="$RL_EVAL_EVERY_N_STEPS"
+    --eval_batch_size="$RL_EVAL_BATCH_SIZE"
+    --eval_temperature="$RL_EVAL_TEMPERATURE"
+    --eval_tfds_split="$RL_EVAL_SPLIT"
     --seed="$SEED"
     --weight_sync_mode="$WEIGHT_SYNC_MODE"
     --stop_workers_on_exit
