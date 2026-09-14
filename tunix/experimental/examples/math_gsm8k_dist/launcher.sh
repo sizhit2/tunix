@@ -78,11 +78,21 @@ TRAJECTORY_LOG_DIR=${TRAJECTORY_LOG_DIR:-}
 SAMPLER=${SAMPLER:-inprocess_vllm}
 WEIGHT_SYNC_MODE=${WEIGHT_SYNC_MODE:-none}
 USE_ROLLOUT_LOGPS=${USE_ROLLOUT_LOGPS:-true}
-CHAT_PARSER=${CHAT_PARSER:-auto}
+# The GSM8K VTC prompt ends with an opened <reasoning> tag for the model to
+# continue; a chat template would close the user turn and start an assistant
+# turn after it, so the format check could never pass. This launcher only
+# runs that recipe, hence raw by default.
+CHAT_PARSER=${CHAT_PARSER:-raw}
 # Qwen3 chat models close each turn with `<|im_end|>` rather than the
 # tokenizer's default EOS token, so the rollout has to stop on it. Set empty to
 # fall back to the tokenizer's EOS token.
-EOS_TOKENS=${EOS_TOKENS-'<|im_end|>'}
+# Qwen3 lists both ids in generation_config.json (vLLM stops on both). With
+# CHAT_PARSER=raw the model never emits <|im_end|> -- measured 0/16 raw-prompt
+# completions terminate on it, 5/16 on <|endoftext|> -- so the narrow set runs
+# every rollout to the response budget, where the collect engine clips it
+# before the environment scores it: reward 0 on every step. <|im_end|> is kept
+# for CHAT_PARSER=auto, where it is the terminator.
+EOS_TOKENS=${EOS_TOKENS-'<|im_end|>,<|endoftext|>'}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
 # not a clean failure: Raiden pairs tensors by exact name, so a MaxText trainer
