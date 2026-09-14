@@ -31,6 +31,64 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def stop_token_ids(
+    tokenizer: Any,
+    model_path: str | None = None,
+    source: str = "generation_config",
+) -> list[int]:
+  """The token ids a sampler should stop generation on.
+
+  Engines disagree on this by default, which silently changes what a rollout
+  looks like. vLLM merges ``generation_config.eos_token_id`` into
+  ``stop_token_ids`` on its own, so it stops on every id the model lists;
+  ``tunix.generate.sampler.Sampler`` falls back to the tokenizer's single
+  ``eos_token_id`` when ``eos_tokens`` is not passed. For Qwen3 that is the
+  difference between stopping on ``[<|im_end|>, <|endoftext|>]`` and stopping
+  only on ``<|im_end|>`` -- and a completion-style (raw) prompt is usually
+  finished with ``<|endoftext|>``, so the narrow set runs every completion to
+  the length budget.
+
+  Args:
+    tokenizer: Any tokenizer exposing ``eos_token_id``.
+    model_path: Directory or hub id to read ``generation_config.json`` from.
+      Required for ``source="generation_config"``.
+    source: ``"generation_config"`` for the tokenizer eos plus the ids the
+      model's generation config lists (what vLLM stops on); ``"tokenizer"``
+      for the tokenizer's single eos.
+
+  Returns:
+    Stop token ids, tokenizer eos first. Never empty unless the tokenizer has
+    no eos and the generation config lists none.
+  """
+  ids: list[int] = []
+  eos = getattr(tokenizer, "eos_token_id", None)
+  if eos is not None:
+    ids.append(int(eos))
+  if source == "generation_config":
+    if not model_path:
+      raise ValueError(
+          "stop_token_ids(source='generation_config') needs a model_path to "
+          "read generation_config.json from."
+      )
+    try:
+      from transformers import GenerationConfig  # pylint: disable=g-import-not-at-top
+
+      cfg_eos = GenerationConfig.from_pretrained(model_path).eos_token_id
+      for token in cfg_eos if isinstance(cfg_eos, (list, tuple)) else [cfg_eos]:
+        if token is not None and int(token) not in ids:
+          ids.append(int(token))
+    except Exception:  # pylint: disable=broad-exception-caught
+      logging.info(
+          "No generation_config eos ids for %s; using the tokenizer eos.",
+          model_path,
+      )
+  elif source != "tokenizer":
+    raise ValueError(
+        f"source must be 'generation_config' or 'tokenizer'; got {source!r}"
+    )
+  return ids
+
+
 def compute_attention_masks(
     time_step: int, seq_len: int, input_mask: jax.Array
 ) -> jax.Array:

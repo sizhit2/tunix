@@ -39,6 +39,22 @@ class VanillaRollout(base_rollout.BaseRollout):
         tokenizer,
         sampler.CacheConfig(**dataclasses.asdict(cache_config_or_size)),
     )
+    # `Sampler` maps seed=None to a FIXED jax.random.PRNGKey(0), so two
+    # generate() calls on the same prompt return the identical completion.
+    # `GRPOLearner` is unaffected -- it sends a whole group in one call, and the
+    # batch dimension supplies the diversity -- but `AgenticRLLearner` issues
+    # one call per trajectory (agentic_rl_learner.py: `prompts = [chat_lists]`),
+    # so a group of G came back as G copies of one sample: zero advantage
+    # spread, zero gradient. Count calls and derive a distinct seed for each,
+    # the same fix `experimental/rollout/collector.py` applies per
+    # (prompt_id, group_index). Deterministic across a run.
+    self._call_index = 0
+
+  def _next_seed(self, configured_seed: int | None) -> int:
+    """Returns a distinct sampling seed for every generate() call."""
+    base = 0 if configured_seed is None else int(configured_seed)
+    self._call_index += 1
+    return base + self._call_index
 
   def generate(
       self,
@@ -55,7 +71,7 @@ class VanillaRollout(base_rollout.BaseRollout):
         temperature=rollout_config.temperature,
         top_p=rollout_config.top_p,
         top_k=rollout_config.top_k,
-        seed=rollout_config.seed,  # pyrefly: ignore[bad-argument-type]
+        seed=self._next_seed(rollout_config.seed),
         pad_output=False,
         eos_tokens=rollout_config.eos_tokens,
         return_logprobs=rollout_config.return_logprobs,

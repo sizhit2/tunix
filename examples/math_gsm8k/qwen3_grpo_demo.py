@@ -133,6 +133,7 @@ from tunix.rl import rl_cluster as rl_engine_lib
 from tunix.rl import utils as rl_utils
 from tunix.rl.agentic.agentic_grpo_learner import GRPOConfig, GRPOLearner
 from tunix.rl.agentic.parser.chat_template_parser import parser as chat_parser_lib
+from tunix.generate import utils as gen_utils
 from tunix.rl.rollout import base_rollout
 from tunix.sft import metrics_logger
 from tunix.sft import utils as sft_utils
@@ -173,24 +174,29 @@ COMPUTE_LOGPS_MICRO_BATCH_SIZE = args.compute_logps_micro_batch_size
 
 MAX_STEPS = args.max_steps
 NUM_EPOCHS = 1000
-EVAL_EVERY_N_STEPS = 50
-EVAL_BATCH_SIZE = 128
-EVAL_AT_START = True
-EVAL_AT_END = True
+# Env overrides for the knobs a side-by-side run has to match. Defaults are the
+# recipe's own values, so an unset environment reproduces the recipe exactly.
+_env_int = lambda k, d: int(os.getenv(k, d))
+_env_float = lambda k, d: float(os.getenv(k, d))
+_env_bool = lambda k, d: os.getenv(k, str(d)).lower() in ("1", "true", "yes")
+EVAL_EVERY_N_STEPS = _env_int("EVAL_EVERY_N_STEPS", 50)
+EVAL_BATCH_SIZE = _env_int("EVAL_BATCH_SIZE", 128)
+EVAL_AT_START = _env_bool("EVAL_AT_START", True)
+EVAL_AT_END = _env_bool("EVAL_AT_END", True)
 
 BETA = 0.04
 EPSILON = 0.2
 # NeMo's reference_policy_kl_type="k2" is exactly 0.5 * (logp-ref_logp)^2,
 # which matches Tunix's "mse_kl" implementation.
 KL_LOSS_MODE = "mse_kl"
-LEARNING_RATE = 2.0e-7
-WEIGHT_DECAY = 0.01
-ADAM_B1 = 0.9
-ADAM_B2 = 0.999
-ADAM_EPS = 1.0e-8
-MAX_GRAD_NORM = 1.0
-WARMUP_STEPS = 50
-LR_DECAY_STEPS = 500
+LEARNING_RATE = _env_float("LEARNING_RATE", 2.0e-7)
+WEIGHT_DECAY = _env_float("WEIGHT_DECAY", 0.01)
+ADAM_B1 = _env_float("ADAM_B1", 0.9)
+ADAM_B2 = _env_float("ADAM_B2", 0.999)
+ADAM_EPS = _env_float("ADAM_EPS", 1.0e-8)
+MAX_GRAD_NORM = _env_float("MAX_GRAD_NORM", 1.0)
+WARMUP_STEPS = _env_int("WARMUP_STEPS", 50)
+LR_DECAY_STEPS = _env_int("LR_DECAY_STEPS", 500)
 
 MAX_PROMPT_LENGTH = 1024
 MAX_RESPONSE_LENGTH = args.max_response_length
@@ -208,12 +214,19 @@ MAX_CONCURRENCY = args.max_concurrency or (
 )
 
 ROLLOUT_ENGINE = os.getenv("ROLLOUT_ENGINE", "vllm")
+# Which stop-token set the vanilla sampler gets. "tokenizer" (default) is the
+# single eos this recipe has always passed; "generation_config" adds the ids the
+# model's generation_config lists -- what the vLLM engine stops on natively.
+STOP_TOKENS = os.getenv("STOP_TOKENS", "tokenizer")
 USE_LORA = False
 LORA_RANK = 64
 LORA_ALPHA = 64.0
 ENABLE_CHECKPOINTING = False
-ENABLE_REMAT = False
-ENABLE_FLASH_ATTENTION = True
+ENABLE_REMAT = _env_bool("ENABLE_REMAT", False)
+# Flash (splash) attention currently produces degenerate generations in the
+# vanilla sampler path -- see the PR description. The default keeps the recipe's
+# behaviour (vLLM, which uses its own kernels); set false for vanilla rollouts.
+ENABLE_FLASH_ATTENTION = _env_bool("ENABLE_FLASH_ATTENTION", True)
 MODEL_DTYPE = jnp.bfloat16
 
 ARTIFACT_ROOT = os.path.join(REPO_ROOT, "artifacts", "qwen3_grpo_gsm8k_vtc")
@@ -627,7 +640,10 @@ def main() -> None:
       trust_remote_code=True,
   )
   chat_parser = VTCRawTextParser()
-  qwen_eos_tokens = tokenizer.encode("<|im_end|>", add_special_tokens=False)  # pyrefly: ignore[missing-attribute]
+  qwen_eos_tokens = gen_utils.stop_token_ids(
+      tokenizer, MODEL_DOWNLOAD_DIR, STOP_TOKENS
+  )
+  logging.info("Rollout stop token ids (%s): %s", STOP_TOKENS, qwen_eos_tokens)
 
   reference, actor = create_reference_and_actor(shared_mesh)
   show_hbm_usage("after loading qwen_ref / qwen_actor")
@@ -782,7 +798,14 @@ def main() -> None:
 
   # ====== Training ======
   try:
-    grpo_trainer.train(train_dataset, eval_dataset=eval_dataset)
+    # EVAL_EVERY_N_STEPS<=0 disables eval outright. A large interval does not:
+    # the learner's gate is `train_step % eval_every_n_steps == 0`, which is true
+    # at step 0 for any interval, so it would always run one full eval pass
+    # (EVAL_BATCH_SIZE prompts) before the first training step.
+    grpo_trainer.train(
+        train_dataset,
+        eval_dataset=eval_dataset if EVAL_EVERY_N_STEPS > 0 else None,
+    )
   except Exception:
     rl_engine.close()
     raise
