@@ -20,7 +20,6 @@ from unittest import mock
 from absl.testing import absltest
 from etils import epath
 from tunix.experimental.orchestrator import orchestrator
-from tunix.experimental.trajectory import config as trajectory_config_lib
 from tunix.experimental.trajectory import file_store
 from tunix.experimental.trajectory import trajectory_testing
 
@@ -47,9 +46,7 @@ class ClusterOrchestratorTrajectoryStoreTest(absltest.TestCase):
 
   def test_disabled_config_means_no_store(self):
     orch = _orchestrator(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=False
-        )
+        trajectory_store_config={"enabled": False, "backend": "file"}
     )
     self.assertIsNone(orch.trajectory_store)
     orch.shutdown()
@@ -57,12 +54,12 @@ class ClusterOrchestratorTrajectoryStoreTest(absltest.TestCase):
   def test_enabled_file_backend_builds_store_once(self):
     tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
     orch = _orchestrator(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="cluster_run",
-        )
+        trajectory_store_config={
+            "enabled": True,
+            "backend": "file",
+            "root_dir": str(tmp_dir),
+            "run_id": "cluster_run",
+        }
     )
     self.assertIsInstance(orch.trajectory_store, file_store.FileTrajectoryStore)
     orch.shutdown()
@@ -70,19 +67,17 @@ class ClusterOrchestratorTrajectoryStoreTest(absltest.TestCase):
   def test_shutdown_closes_the_store(self):
     tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
     orch = _orchestrator(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="cluster_run",
-        )
+        trajectory_store_config={
+            "enabled": True,
+            "backend": "file",
+            "root_dir": str(tmp_dir),
+            "run_id": "cluster_run",
+        }
     )
     store = orch.trajectory_store
     orch.shutdown()
     with self.assertRaises(RuntimeError):
-      store.add_step(
-          trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1
-      )
+      store.add_step(trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1)
 
   def test_shutdown_closes_the_store_even_when_a_prior_step_raises(self):
     orch = _orchestrator()
@@ -105,9 +100,7 @@ class ClusterOrchestratorTrajectoryStoreTest(absltest.TestCase):
     # StandardRLProgram should receive the orchestrator's own instance, not
     # build a second one of its own.
     orch = _orchestrator(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True, backend="memory"
-        )
+        trajectory_store_config={"enabled": True, "backend": "memory"}
     )
     orch.engine = mock.MagicMock()
     orch.bring_up_workers = mock.MagicMock()

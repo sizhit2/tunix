@@ -20,7 +20,6 @@ from unittest import mock
 from absl.testing import absltest
 from etils import epath
 from tunix.experimental.common import test_utils as mocks
-from tunix.experimental.trajectory import config as trajectory_config_lib
 from tunix.experimental.trajectory import file_store
 from tunix.experimental.trajectory import trajectory_testing
 from tunix.experimental.worker import rollout_worker as rollout_worker_lib
@@ -48,9 +47,7 @@ class RolloutWorkerTrajectoryStoreTest(absltest.TestCase):
 
   def test_disabled_trajectory_store_config_means_no_store(self):
     config = rollout_worker_lib.RolloutConfig(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=False
-        )
+        trajectory_store_config={"enabled": False, "backend": "file"}
     )
     worker = _worker(config=config)
     self.assertIsNone(worker._trajectory_store)  # pylint: disable=protected-access
@@ -58,12 +55,12 @@ class RolloutWorkerTrajectoryStoreTest(absltest.TestCase):
   def test_enabled_file_backend_builds_store_once(self):
     tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
     config = rollout_worker_lib.RolloutConfig(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="worker_run",
-        )
+        trajectory_store_config={
+            "enabled": True,
+            "backend": "file",
+            "root_dir": str(tmp_dir),
+            "run_id": "worker_run",
+        }
     )
     worker = _worker(config=config)
     self.assertIsInstance(
@@ -76,9 +73,12 @@ class RolloutWorkerTrajectoryStoreTest(absltest.TestCase):
     # this test process stand in for two separate worker pods, each of which
     # would build its own store exactly once, in its own __init__.
     tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
-    config = trajectory_config_lib.TrajectoryStoreConfig(
-        enabled=True, backend="file", root_dir=str(tmp_dir), run_id="shared"
-    )
+    config = {
+        "enabled": True,
+        "backend": "file",
+        "root_dir": str(tmp_dir),
+        "run_id": "shared",
+    }
     worker_a = _worker(
         config=rollout_worker_lib.RolloutConfig(trajectory_store_config=config)
     )
@@ -94,20 +94,18 @@ class RolloutWorkerTrajectoryStoreTest(absltest.TestCase):
   def test_stop_closes_the_store(self):
     tmp_dir = epath.Path(self.enter_context(tempfile.TemporaryDirectory()))
     config = rollout_worker_lib.RolloutConfig(
-        trajectory_store_config=trajectory_config_lib.TrajectoryStoreConfig(
-            enabled=True,
-            backend="file",
-            root_dir=str(tmp_dir),
-            run_id="worker_run",
-        )
+        trajectory_store_config={
+            "enabled": True,
+            "backend": "file",
+            "root_dir": str(tmp_dir),
+            "run_id": "worker_run",
+        }
     )
     worker = _worker(config=config)
     store = worker._trajectory_store  # pylint: disable=protected-access
     worker.stop()
     with self.assertRaises(RuntimeError):
-      store.add_step(
-          trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1
-      )
+      store.add_step(trajectory_testing.STEP_1_1, trajectory_testing.METADATA_1)
 
   def test_stop_closes_the_store_even_when_cancel_all_raises(self):
     worker = _worker()

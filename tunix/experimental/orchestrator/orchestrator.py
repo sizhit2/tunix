@@ -22,7 +22,7 @@ Custom Program Execution (`run_program`).
 import collections
 from collections.abc import Callable, Iterable, Sequence
 from concurrent import futures
-from typing import Any
+from typing import Any, Mapping
 
 from absl import logging
 from tunix.experimental.common import datatypes
@@ -34,8 +34,7 @@ from tunix.experimental.orchestrator import lifecycle
 from tunix.experimental.orchestrator import rl_program
 from tunix.experimental.orchestrator import startup_validation
 from tunix.experimental.orchestrator import worker_registry
-from tunix.experimental.trajectory import config as trajectory_config_lib
-from tunix.experimental.trajectory import factory as trajectory_factory
+from tunix.experimental.trajectory import store as trajectory_store_lib
 from tunix.experimental.worker import abstract_worker
 from tunix.experimental.worker import remote_execution
 
@@ -51,11 +50,23 @@ class ClusterOrchestrator:
       lifecycle_driver: lifecycle.LifecycleDriver | None = None,
       monitor: health_monitor.HealthMonitor | None = None,
       weight_sync_coordinator: Any = None,
-      trajectory_store_config: (
-          trajectory_config_lib.TrajectoryStoreConfig | None
-      ) = None,
+      trajectory_store_config: Mapping[str, Any] | None = None,
   ):
-    """Initializes ClusterOrchestrator."""
+    """Initializes ClusterOrchestrator.
+
+    Args:
+      config: Orchestrator configuration.
+      registry: Worker registry to use; one is created if omitted.
+      lifecycle_driver: Lifecycle driver to use; one is created if omitted.
+      monitor: Health monitor to use; one is created if omitted.
+      weight_sync_coordinator: Weight sync coordinator, if any.
+      trajectory_store_config: Trajectory Store configuration for this
+        process, or None to run without a store. See
+        `store.TrajectoryStore.from_config`. Pass the same config to every
+        process in the run: for the file backend it is the shared root_dir
+        and run_id that make the workers' writes visible to this process's
+        reads.
+    """
     self.config = config
     self.registry = registry or worker_registry.WorkerRegistry()
     self.lifecycle_driver = lifecycle_driver or lifecycle.LifecycleDriver(
@@ -79,9 +90,16 @@ class ClusterOrchestrator:
     # thread into whatever RLProgram it constructs; see run() below for the
     # Tier 1 case, and StandardRLProgram's `trajectory_store` argument for
     # Tier 3.
-    self.trajectory_store = trajectory_factory.build_trajectory_store(
-        trajectory_store_config, owner="orchestrator"
+    self.trajectory_store = trajectory_store_lib.TrajectoryStore.from_config(
+        trajectory_store_config
     )
+    if self.trajectory_store is not None:
+      # Logged so a mismatch between this process and its workers is one
+      # grep, rather than surfacing as an empty read here.
+      logging.info(
+          "[trajectory-store] orchestrator built %s",
+          self.trajectory_store.to_config(),
+      )
 
   def __enter__(self) -> "ClusterOrchestrator":
     """Interactive context manager bring-up."""
