@@ -890,15 +890,25 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
 
   def _try_get_learning_rate(self) -> float | None:
     """Returns the learning rate from the optimizer state if available."""
+    state = self.optimizer.opt_state
+    hyperparams = getattr(state, "hyperparams", None)
+    if hyperparams is not None and "learning_rate" in hyperparams:
+      return hyperparams["learning_rate"].value
+    # A chained optimizer, e.g. optax.chain(clip_by_global_norm, adamw), keeps
+    # one state per link, and only the optimizer's own link carries a learning
+    # rate. Clipping contributes an `EmptyState`, so stopping at the first one
+    # skips the link that has the answer. Scan for the key instead, and treat a
+    # link that has other hyperparameters but no learning rate as a miss rather
+    # than an error.
     try:
-      return self.optimizer.opt_state.hyperparams["learning_rate"].value
-    except AttributeError:
-      for chainpart in self.optimizer.opt_state:
-        if isinstance(chainpart, optax.EmptyState):
-          break
-        if hasattr(chainpart, "hyperparams"):
-          return chainpart.hyperparams["learning_rate"].value
+      chainparts = list(state)
+    except TypeError:
       return None
+    for chainpart in chainparts:
+      hyperparams = getattr(chainpart, "hyperparams", None)
+      if hyperparams is not None and "learning_rate" in hyperparams:
+        return hyperparams["learning_rate"].value
+    return None
 
   def _log_metrics(
       self,

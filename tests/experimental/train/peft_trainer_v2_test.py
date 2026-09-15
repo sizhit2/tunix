@@ -130,6 +130,67 @@ class PeftTrainerTest(parameterized.TestCase):
       trainer.train(self.train_ds, self.eval_ds)
     self.assertEqual(global_counter, 1)
 
+  def test_learning_rate_is_logged_behind_gradient_clipping(self):
+    """A clipping link ahead of the optimizer does not hide the learning rate.
+
+    `tunix.cli.config.create_optimizer` chains the link named by
+    `opt_chain_type` ahead of the optimizer, which is what the GSM8K launcher
+    does by default (`OPT_CHAIN_TYPE=clip_by_global_norm`). Clipping
+    contributes an `EmptyState`, so stopping the scan at the first one never
+    reaches the injected learning rate behind it and the metric goes missing
+    for the whole run.
+    """
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=2)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(max_norm=1.0),
+        optax.inject_hyperparams(optax.sgd)(
+            learning_rate=optax.constant_schedule(TEST_LEARNING_RATE)
+        ),
+    )
+    trainer = peft_trainer_v2.PeftTrainer(model, optimizer, config)
+    trainer = trainer.with_gen_model_input_fn(dummy_gen_model_input_fn)
+
+    trainer.train(self.train_ds, self.eval_ds)
+
+    self.assertEqual(
+        trainer.metrics_logger.get_metric('', 'learning_rate', 'train'),  # pyrefly: ignore[missing-attribute]
+        TEST_LEARNING_RATE,
+    )
+
+  def test_a_link_with_other_hyperparameters_is_not_mistaken_for_the_lr(self):
+    """A wrapped clipping link has `hyperparams`, but holding `max_norm`."""
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=2)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    optimizer = optax.chain(
+        optax.inject_hyperparams(optax.clip_by_global_norm)(max_norm=1.0),
+        optax.inject_hyperparams(optax.sgd)(
+            learning_rate=optax.constant_schedule(TEST_LEARNING_RATE)
+        ),
+    )
+    trainer = peft_trainer_v2.PeftTrainer(model, optimizer, config)
+    trainer = trainer.with_gen_model_input_fn(dummy_gen_model_input_fn)
+
+    trainer.train(self.train_ds, self.eval_ds)
+
+    self.assertEqual(
+        trainer.metrics_logger.get_metric('', 'learning_rate', 'train'),  # pyrefly: ignore[missing-attribute]
+        TEST_LEARNING_RATE,
+    )
+
+  def test_learning_rate_is_absent_when_no_link_injects_it(self):
+    """A plain optimizer logs no learning rate instead of raising."""
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=2)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    trainer = peft_trainer_v2.PeftTrainer(
+        model, optax.sgd(TEST_LEARNING_RATE), config
+    )
+    trainer = trainer.with_gen_model_input_fn(dummy_gen_model_input_fn)
+
+    trainer.train(self.train_ds, self.eval_ds)
+
+    self.assertIsNone(trainer._try_get_learning_rate())
+
   @parameterized.named_parameters(
       ('cache_nnx_graph', True),
       ('no_cache_nnx_graph', False),
