@@ -90,6 +90,28 @@ ROLLOUT_LOG="${LOG_ROOT}/rollout.log"
 INFERENCE_LOG="${LOG_ROOT}/inference.log"
 ORCHESTRATOR_LOG="${LOG_ROOT}/orchestrator.log"
 
+# Trajectory Store. Off by default; set TRAJECTORY_STORE_ENABLED=1 to record
+# rollout trajectories. The run id is generated HERE, once, and passed to
+# every process below: each process builds its own store, so a per-process
+# default would give each of them a different run id and split one run across
+# separate directory trees, where the orchestrator's reads find nothing.
+TRAJECTORY_STORE_ENABLED=${TRAJECTORY_STORE_ENABLED:-0}
+TRAJECTORY_STORE_BACKEND=${TRAJECTORY_STORE_BACKEND:-file}
+TRAJECTORY_STORE_ROOT_DIR=${TRAJECTORY_STORE_ROOT_DIR:-${LOG_ROOT}/trajectories}
+TRAJECTORY_STORE_RUN_ID=${TRAJECTORY_STORE_RUN_ID:-run_$(date -u +%Y%m%d_%H%M%S)_$$}
+
+# Appended to both the rollout and orchestrator commands, so the two cannot
+# drift apart.
+TRAJECTORY_STORE_ARGS=()
+if [[ "$TRAJECTORY_STORE_ENABLED" == "1" || "$TRAJECTORY_STORE_ENABLED" == "true" || "$TRAJECTORY_STORE_ENABLED" == "True" ]]; then
+  TRAJECTORY_STORE_ARGS=(
+    --trajectory_store_enabled
+    --trajectory_store_backend="$TRAJECTORY_STORE_BACKEND"
+    --trajectory_store_root_dir="$TRAJECTORY_STORE_ROOT_DIR"
+    --trajectory_store_run_id="$TRAJECTORY_STORE_RUN_ID"
+  )
+fi
+
 print_section() {
   echo
   echo "================ $1 ================"
@@ -319,6 +341,11 @@ echo "  response len:   $MAX_RESPONSE_LENGTH"
 echo "  train micro:    $TRAIN_MICRO_BATCH_SIZE"
 echo "  reward mode:    $REWARD_MODE"
 echo "  trace rollouts: $TRACE_ROLLOUTS"
+if ((${#TRAJECTORY_STORE_ARGS[@]})); then
+  echo "  traj store:     $TRAJECTORY_STORE_BACKEND $TRAJECTORY_STORE_ROOT_DIR/$TRAJECTORY_STORE_RUN_ID"
+else
+  echo "  traj store:     disabled"
+fi
 echo "  log level:      $LOG_LEVEL"
 echo "  mini batch:     $MINI_BATCH_SIZE"
 echo "  use lora:       $USE_LORA"
@@ -431,6 +458,9 @@ echo "Launching vLLM rollout node on TPU chips $ROLLOUT_TPU_CHIPS..."
   )
   if [[ "$USE_LORA" == "1" || "$USE_LORA" == "true" || "$USE_LORA" == "True" ]]; then
     ROLLOUT_CMD+=(--use_lora)
+  fi
+  if ((${#TRAJECTORY_STORE_ARGS[@]})); then
+    ROLLOUT_CMD+=("${TRAJECTORY_STORE_ARGS[@]}")
   fi
 
   export JAX_PLATFORMS=tpu,cpu
@@ -609,6 +639,9 @@ echo "Launching CPU orchestrator..."
   )
   if [[ -n "$INFERENCE_ADDR" ]]; then
     ORCHESTRATOR_CMD+=(--inference_addr="$INFERENCE_ADDR")
+  fi
+  if ((${#TRAJECTORY_STORE_ARGS[@]})); then
+    ORCHESTRATOR_CMD+=("${TRAJECTORY_STORE_ARGS[@]}")
   fi
 
   export JAX_PLATFORMS=cpu
