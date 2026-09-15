@@ -27,12 +27,12 @@ from tunix.sft import metrics_logger as metrics_logger_lib
 Status = datatypes.TrajectoryStatus
 
 
-def _item(reward_text, status=Status.SUCCEEDED, n_tokens=3):
+def _item(reward_text, status=Status.SUCCEEDED, n_tokens=3, env_reward=0.0):
   return datatypes.TrajectoryItem(
       prompt_id="p",
       group_index=0,
       start_step=0,
-      traj=datatypes.Trajectory(reward=0.0, status=status),
+      traj=datatypes.Trajectory(reward=env_reward, status=status),
       prompt_tokens=np.array([1, 2], dtype=np.int32),
       completion_tokens=np.arange(n_tokens, dtype=np.int32),
       metadata={"answer": reward_text},
@@ -100,6 +100,21 @@ class HoldoutEvalTest(absltest.TestCase):
     self.assertEqual(
         prog.metrics_logger.get_metric("", "eval/rewards/mean", "train"), 0.5
     )
+
+  def test_eval_falls_back_to_the_environment_reward(self):
+    """`--reward_mode=env` leaves reward_fns empty and scores in the env."""
+    prog = self._program(eval_dataset=["q1", "q2"], eval_every_n_steps=1)
+    prog.reward_fns = []
+    prog.engine.generate = mock.AsyncMock(
+        return_value=[
+            _item("ignored", env_reward=1.0),
+            _item("ignored", env_reward=0.1),
+        ]
+    )
+    metrics = asyncio.run(prog.eval_stage(log_step=0))
+
+    self.assertAlmostEqual(metrics["eval/rewards/mean"], 0.55)
+    self.assertAlmostEqual(metrics["eval/solve_ratio"], 0.5)
 
   def test_eval_stage_stamps_prompt_ids_and_honors_the_batch_cap(self):
     prog = self._program(

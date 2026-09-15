@@ -933,8 +933,14 @@ class StandardRLProgram(RLProgram):
 
     rewards, lengths, clipped = [], [], []
     for item in items:
+      # Same precedence as the critique stage: orchestrator-side reward
+      # functions when there are any, otherwise the reward the rollout
+      # environment already assigned. `--reward_mode=env`, the GSM8K default,
+      # leaves `reward_fns` empty and scores inside the environment.
       if self.reward_fns:
         rewards.append(float(sum(fn(item) for fn in self.reward_fns)))
+      else:
+        rewards.append(float(getattr(item.traj, "reward", 0.0) or 0.0))
       completion = getattr(item, "completion_tokens", None)
       if completion is not None:
         lengths.append(len(completion))
