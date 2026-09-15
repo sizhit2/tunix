@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator
+import dataclasses
 import functools
 import logging
 import os
@@ -182,6 +183,34 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       "--shuffle", action=argparse.BooleanOptionalAction, default=True
   )
   parser.add_argument(
+      "--eval_every_n_steps",
+      type=int,
+      default=0,
+      help=(
+          "Run a held-out eval every N training steps. 0 disables it. Training"
+          " reward is measured on the prompts just trained on; this measures"
+          " generalization on a split the policy never sees."
+      ),
+  )
+  parser.add_argument(
+      "--eval_batch_size",
+      type=int,
+      default=64,
+      help="Number of held-out prompts per eval, one sample each.",
+  )
+  parser.add_argument(
+      "--eval_temperature",
+      type=float,
+      default=0.0,
+      help="Sampling temperature for eval. 0.0 reads the policy greedily.",
+  )
+  parser.add_argument(
+      "--eval_tfds_split",
+      type=str,
+      default="test",
+      help="GSM8K split to evaluate on. Must differ from --tfds_split.",
+  )
+  parser.add_argument(
       "--log_dir",
       type=str,
       default=os.getenv("LOG_DIR", "/tmp/trellis_gsm8k"),
@@ -256,6 +285,29 @@ def _build_algo(args: argparse.Namespace) -> algorithm_adapter.GRPOAdapter:
       ),
       max_response_length=args.max_response_length,
   )
+
+
+def _eval_prompt_items(args: argparse.Namespace) -> list[dict[str, Any]]:
+  """Loads the eval split, unshuffled so every eval scores the same prompts."""
+  if args.eval_every_n_steps <= 0:
+    return []
+  if args.eval_tfds_split == args.tfds_split:
+    raise ValueError(
+        f"--eval_tfds_split ({args.eval_tfds_split!r}) must differ from"
+        f" --tfds_split ({args.tfds_split!r}); evaluating on the training"
+        " split measures memorization, not generalization."
+    )
+  dataset = gsm8k.load_gsm8k_dataset(
+      split=args.eval_tfds_split,
+      data_dir=args.tfds_data_dir,
+      shuffle=False,
+      seed=args.seed,
+  )
+  count = min(len(dataset), max(args.eval_batch_size, 0) or len(dataset))
+  return [
+      _build_prompt_item(example=dataset[i], prompt_idx=i)
+      for i in range(count)
+  ]
 
 
 def _build_prompt_item(
@@ -442,6 +494,12 @@ def main(argv: list[str], context: ProcessContext | None = None) -> None:
           max_segments_per_packed_row=args.max_segments_per_packed_row,
           trainer_fsdp=args.trainer_fsdp,
           trainer_dp=args.trainer_dp,
+      ),
+      eval_dataset=_eval_prompt_items(args),
+      eval_every_n_steps=args.eval_every_n_steps,
+      eval_batch_size=args.eval_batch_size,
+      eval_generation_args=dataclasses.replace(
+          generation_args, temperature=args.eval_temperature
       ),
       metrics_logging_options=metrics_logging_options,
       trajectory_log_dir=args.trajectory_log_dir,

@@ -135,6 +135,10 @@ class StandardRLProgram(RLProgram):
       mode: Mode | str = Mode.TRAIN,
       on_step_begin: Callable[[int], None] | None = None,
       on_step_end: Callable[[int, Any], None] | None = None,
+      eval_dataset: Iterable[Any] | None = None,
+      eval_every_n_steps: int = 0,
+      eval_batch_size: int = 0,
+      eval_generation_args: datatypes.GenerationArgs | None = None,
   ):
     super().__init__()
     self.engine: rl_engine_interface.AbstractRLEngine | None = None
@@ -227,6 +231,14 @@ class StandardRLProgram(RLProgram):
     self.mode = mode if isinstance(mode, Mode) else Mode(mode)
     self.on_step_begin = on_step_begin
     self.on_step_end = on_step_end
+    # Held-out evaluation. Training reward is measured on the prompts the
+    # policy just trained on, so it answers "did the policy learn to satisfy
+    # the reward on these prompts"; eval answers "does it generalize", which
+    # is the question a convergence curve is usually read as answering.
+    self.eval_dataset = list(eval_dataset) if eval_dataset is not None else None
+    self.eval_every_n_steps = int(eval_every_n_steps)
+    self.eval_batch_size = int(eval_batch_size)
+    self.eval_generation_args = eval_generation_args
     self._in_flight_rollouts = 0
     self._dispatch_capacity: asyncio.Semaphore | None = None
     self._dispatch_done = asyncio.Event()
@@ -878,6 +890,102 @@ class StandardRLProgram(RLProgram):
       }
       self.trajectory_logger.log_item_async(row)
 
+  def _eval_is_due(self, step: int) -> bool:
+    """True when a held-out eval should run after finishing `step`."""
+    return bool(
+        self.eval_dataset
+        and self.eval_every_n_steps > 0
+        and (step + 1) % self.eval_every_n_steps == 0
+    )
+
+  async def eval_stage(self, log_step: int) -> dict[str, float]:
+    """Scores held-out prompts with the current policy and logs `eval/*`.
+
+    Uses `engine.generate`, one blocking batched call, rather than the
+    dispatch/poll pipeline, so it cannot interleave with training rollouts or
+    consume the training queue. One sample per prompt: this measures the
+    policy, not the sampling distribution, so pass
+    `eval_generation_args=GenerationArgs(temperature=0.0)` for a greedy read.
+
+    Args:
+      log_step: Step index the metrics are logged against.
+
+    Returns:
+      The logged metrics, so callers and tests can assert on them.
+    """
+    assert self.engine is not None
+    if not self.eval_dataset:
+      return {}
+    prompts = self.eval_dataset
+    if self.eval_batch_size > 0:
+      prompts = prompts[: self.eval_batch_size]
+    prompts = [
+        dict(p, prompt_id=p.get("prompt_id", f"eval_{i}"))
+        if isinstance(p, dict)
+        else {"prompt": p, "prompt_id": f"eval_{i}"}
+        for i, p in enumerate(prompts)
+    ]
+    logging.info("Eval: generating %d held-out rollouts...", len(prompts))
+    started = time.time()
+    items = await self.engine.generate(
+        prompts, generation_args=self.eval_generation_args
+    )
+
+    rewards, lengths, clipped = [], [], []
+    for item in items:
+      # Same precedence as the critique stage: orchestrator-side reward
+      # functions when there are any, otherwise the reward the rollout
+      # environment already assigned. `--reward_mode=env`, the GSM8K default,
+      # leaves `reward_fns` empty and scores inside the environment.
+      if self.reward_fns:
+        rewards.append(float(sum(fn(item) for fn in self.reward_fns)))
+      else:
+        rewards.append(float(getattr(item.traj, "reward", 0.0) or 0.0))
+      completion = getattr(item, "completion_tokens", None)
+      if completion is not None:
+        lengths.append(len(completion))
+      traj = getattr(item, "traj", None)
+      status = (getattr(traj, "status", None) if traj else None) or getattr(
+          item, "status", None
+      )
+      if status is not None:
+        name = str(getattr(status, "name", status)).upper()
+        clipped.append(
+            1.0
+            if name == datatypes.TrajectoryStatus.MAX_CONTEXT_LIMIT_REACHED.name
+            else 0.0
+        )
+
+    metrics: dict[str, float] = {"eval/num_prompts": float(len(items))}
+    if rewards:
+      metrics["eval/rewards/mean"] = float(np.mean(rewards))
+      metrics["eval/rewards/max"] = float(np.max(rewards))
+      # Fraction scoring above the format-only tier, i.e. "solved" for a
+      # graded reward such as the GSM8K recipe's 1.0 / 0.5 / 0.1 / 0.0 shape.
+      metrics["eval/solve_ratio"] = float(np.mean(np.asarray(rewards) > 0.5))
+    if lengths:
+      metrics["eval/completions/mean_length"] = float(np.mean(lengths))
+    if clipped:
+      metrics["eval/completions/clip_ratio"] = float(np.mean(clipped))
+    metrics["eval/time_sec"] = time.time() - started
+
+    for name, value in metrics.items():
+      self.metrics_logger.log(
+          self.metrics_prefix, name, value, self.mode, log_step
+      )
+    logging.info(
+        "Eval @ step %d: reward=%.4f solve_ratio=%.3f clip_ratio=%.3f"
+        " len=%.0f (%d prompts, %.1fs)",
+        log_step,
+        metrics.get("eval/rewards/mean", float("nan")),
+        metrics.get("eval/solve_ratio", float("nan")),
+        metrics.get("eval/completions/clip_ratio", float("nan")),
+        metrics.get("eval/completions/mean_length", float("nan")),
+        len(items),
+        metrics["eval/time_sec"],
+    )
+    return metrics
+
   async def train_stage(self) -> None:
     """Stage 3: Streaming gradient accumulation with RLTrainerPayloads."""
     assert self.engine is not None
@@ -1079,6 +1187,11 @@ class StandardRLProgram(RLProgram):
             f"{perplexity_val:.4f}" if perplexity_val is not None else "N/A",
             step_time_sec,
         )
+
+      # After the update, so it scores the policy the step produced rather
+      # than the one it started from.
+      if self._eval_is_due(current_step):
+        await self.eval_stage(current_step)
 
       if self.on_step_end:
         self.on_step_end(current_step, step_result)
