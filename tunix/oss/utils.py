@@ -18,7 +18,9 @@ from typing import Any
 
 from absl import logging
 import fsspec
+import dotenv
 import huggingface_hub as hf
+from huggingface_hub import errors as hf_errors
 
 
 def pathways_available() -> bool:
@@ -72,17 +74,40 @@ def kaggle_pipeline(model_id: str, model_download_path: str):
   return kagglehub.model_download(model_id)
 
 
+def _load_hf_token_from_dotenv() -> str | None:
+  """Returns HF_TOKEN, also reading it from a `.env` file if not exported.
+
+  Looks for `.env` from the current working directory upwards, then from the
+  tunix package directory upwards, so a token kept next to (or above) the
+  checkout is found regardless of where the script is launched from. Values
+  already present in the environment always win.
+  """
+  cwd_dotenv = dotenv.find_dotenv(usecwd=True)
+  if cwd_dotenv:
+    dotenv.load_dotenv(cwd_dotenv)
+  dotenv.load_dotenv()
+  return os.environ.get('HF_TOKEN') or None
+
+
 def hf_pipeline(model_id: str, model_download_path: str):
   """Download model from HuggingFace."""
-  if 'HF_TOKEN' not in os.environ:
+  token = _load_hf_token_from_dotenv()
+  try:
+    all_files = hf.list_repo_files(model_id, token=token)
+  except (hf_errors.GatedRepoError, hf_errors.RepositoryNotFoundError):
+    # Public models need no credentials; only prompt for an interactive login
+    # when the repo is actually gated/private and no token was found.
+    if token:
+      raise
     hf.login()
-  all_files = hf.list_repo_files(model_id)
+    all_files = hf.list_repo_files(model_id)
   filtered_files = [f for f in all_files if not f.startswith('original/')]
   for filename in filtered_files:
     hf.hf_hub_download(
         repo_id=model_id,
         filename=filename,
         local_dir=model_download_path,
+        token=token,
     )
   logging.info(
       'Downloaded %s to: %s',
