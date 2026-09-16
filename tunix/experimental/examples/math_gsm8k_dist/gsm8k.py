@@ -110,9 +110,35 @@ def make_gsm8k_reward_fn(
 ) -> collections.abc.Callable[[Any], float]:
   """Creates an orchestrator-side reward function scoring completions against gold answers."""
 
+  def _assistant_text(item: Any, metadata: dict) -> str:
+    """Assistant turn(s) only -- NOT the whole conversation.
+
+    metadata["text"] mirrors traj["conversation_text"], which is the full chat
+    (user prompt + assistant turns). The VTC prompt template itself contains
+    <reasoning>...</reasoning> and <answer>...</answer> in its instruction
+    text, so scoring prompt+completion double-counts those tags and makes
+    is_vtc_format_correct (exactly-once) structurally unreachable: a formatted
+    completion counts each tag twice and is paid 0.5 instead of 1.0, while an
+    unformatted one inherits the prompt's tags at count one and is paid 0.1.
+    Read the assistant turns from traj directly (joining all of them), the
+    same source the main agentic path scores.
+    """
+    traj = getattr(item, "traj", None) or {}
+    conversation = (
+        traj.get("conversation_text") if isinstance(traj, dict) else None
+    )
+    if isinstance(conversation, list):
+      return "".join(
+          str(m.get("content", ""))
+          for m in conversation
+          if isinstance(m, dict) and m.get("role") == "assistant"
+      )
+    # Fallback for payloads that do not carry a structured conversation.
+    return str(metadata.get("text", ""))
+
   def reward_fn(item: Any) -> float:
     metadata = dict(getattr(item, "metadata", None) or {})
-    text = str(metadata.get("text", ""))
+    text = _assistant_text(item, metadata)
     gold_answer = metadata.get("answer", metadata.get("gold_answer"))
     reward, _ = score_gsm8k_completion(text, gold_answer)
     if debug:

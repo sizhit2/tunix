@@ -197,6 +197,67 @@ class GSM8KTest(absltest.TestCase):
     self.assertEqual(second_item["question"], "What is 3 * 7?")
     self.assertEqual(second_item["answer"], "21")
 
+  def test_reward_fn_scores_assistant_turn_not_conversation(self):
+    """A formatted completion must be paid 1.0 even though the VTC prompt
+    template's own <reasoning>/<answer> tags sit in the user turn.
+
+    Scoring the whole conversation double-counts those tags, capping formatted
+    correct answers at 0.5 and paying unformatted completions 0.1 for the
+    prompt's tags. The reward must read only the assistant turn(s) from traj.
+    """
+    reward_fn = gsm8k.make_gsm8k_reward_fn()
+    prompt_text = gsm8k.GSM8K_PROMPT_TEMPLATE.format("What is 6 * 7?")
+    # metadata mirrors the whole conversation (prompt included), as the
+    # collector historically populated it; the reward must NOT score this.
+    formatted_completion = (
+        "Six times seven.\n</reasoning>\n<answer>\\boxed{42}</answer>"
+    )
+    item = types.SimpleNamespace(
+        metadata={
+            "text": prompt_text + formatted_completion,
+            "gold_answer": "42",
+            "prompt_id": "p_conv",
+        },
+        traj={
+            "conversation_text": [
+                {"role": "user", "content": prompt_text},
+                {"role": "assistant", "content": formatted_completion},
+            ]
+        },
+    )
+    self.assertEqual(reward_fn(item), 1.0)
+
+    # An unformatted completion must not inherit the prompt's tags: 0.5
+    # (answer-only), never 0.1.
+    item_unformatted = types.SimpleNamespace(
+        metadata={
+            "text": prompt_text + "The answer is \\boxed{42}",
+            "gold_answer": "42",
+            "prompt_id": "p_conv2",
+        },
+        traj={
+            "conversation_text": [
+                {"role": "user", "content": prompt_text},
+                {"role": "assistant", "content": "The answer is \\boxed{42}"},
+            ]
+        },
+    )
+    self.assertEqual(reward_fn(item_unformatted), 0.5)
+
+    # Multi-turn: all assistant turns are joined.
+    item_multi = types.SimpleNamespace(
+        metadata={"gold_answer": "42", "prompt_id": "p_conv3"},
+        traj={
+            "conversation_text": [
+                {"role": "user", "content": prompt_text},
+                {"role": "assistant", "content": "Working.\n</reasoning>\n"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "<answer>\\boxed{42}</answer>"},
+            ]
+        },
+    )
+    self.assertEqual(reward_fn(item_multi), 1.0)
+
   def test_make_gsm8k_reward_fn(self):
     reward_fn = gsm8k.make_gsm8k_reward_fn(debug=True)
 
