@@ -169,6 +169,33 @@ class PeftTrainerTest(parameterized.TestCase):
     )
     self.assertGreater(trainer._train_steps, 0)
 
+  def test_learning_rate_surfaces_through_get_metrics(self):
+    """The LR must reach get_metrics(), the channel distributed runs read.
+
+    _log_metrics writes the LR to the trainer's own metrics logger, which a
+    distributed orchestrator never reads; it pulls _written_metrics via
+    get_metrics() and logs "learning_rate" only when scalar_metrics carries
+    it. Guard the full path: after training, the drained buffer must include
+    the learning rate as a scalar metric.
+    """
+    config = peft_trainer_v2.TrainingConfig(eval_every_n_steps=2, max_steps=10)
+    rngs = nnx.Rngs(0)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=rngs)
+    optimizer = optax.inject_hyperparams(optax.sgd)(
+        learning_rate=optax.constant_schedule(TEST_LEARNING_RATE)
+    )
+    trainer = peft_trainer_v2.PeftTrainer(model, optimizer, config)
+    trainer = trainer.with_gen_model_input_fn(dummy_gen_model_input_fn)
+    trainer.train(self.train_ds)
+
+    written = trainer.get_metrics()
+    self.assertIn('learning_rate', written.scalar_metrics)
+    self.assertAlmostEqual(
+        float(written.scalar_metrics['learning_rate']),
+        TEST_LEARNING_RATE,
+        places=6,
+    )
+
     self.assertLen(
         trainer.metrics_logger.get_metric_history('', 'perplexity', 'train'),  # pyrefly: ignore[missing-attribute]
         trainer._train_steps,

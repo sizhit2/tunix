@@ -1007,6 +1007,18 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
         weighted_metrics[k] = val
       else:
         scalar_metrics[k] = val
+    # Surface the learning rate through get_metrics() too. _log_metrics above
+    # writes it only to the trainer's own metrics logger, which a distributed
+    # orchestrator does not read -- it pulls _written_metrics via get_metrics()
+    # and logs "learning_rate" from scalar_metrics when present. Without this,
+    # the LR is visible in single-process runs but silently absent from
+    # distributed ones.
+    if "learning_rate" not in scalar_metrics:
+      learning_rate = self._try_get_learning_rate()
+      if learning_rate is not None:
+        scalar_metrics["learning_rate"] = np.asarray(
+            jax.device_get(learning_rate), dtype=np.float32
+        )
     self._written_metrics = exp_metrics.MetricsBuffer(
         id=metrics_buffer.step,
         weighted_metrics=weighted_metrics,
