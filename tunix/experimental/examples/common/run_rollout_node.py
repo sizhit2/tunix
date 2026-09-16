@@ -119,6 +119,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   parser.add_argument("--max_prompt_length", type=int, default=1024)
   parser.add_argument("--max_response_length", type=int, default=1024)
   parser.add_argument(
+      "--stop_sequences",
+      type=str,
+      default=os.getenv("STOP_SEQUENCES", ""),
+      help=(
+          "Stop string(s) that end generation when they appear in the decoded"
+          " output (e.g. '</answer>'). A JSON list for several, or a single"
+          " bare string. Unlike --eos_tokens these need not be single tokens."
+          " Only the inprocess_vllm sampler honours them."
+      ),
+  )
+  parser.add_argument(
       "--eos_tokens",
       type=str,
       default="",
@@ -272,6 +283,23 @@ def _agent_config(args: argparse.Namespace) -> dict[str, Any]:
   if not isinstance(config, dict):
     raise ValueError("--agent_config_json must decode to a JSON object.")
   return config
+
+
+def _stop_sequences(args) -> list[str] | None:
+  """Resolves --stop_sequences into a list of stop strings, or None."""
+  raw = (args.stop_sequences or "").strip()
+  if not raw:
+    return None
+  if raw.startswith("["):
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list) or not all(
+        isinstance(x, str) for x in parsed
+    ):
+      raise ValueError(
+          f"--stop_sequences JSON must be a list of strings, got {raw!r}"
+      )
+    return parsed or None
+  return [raw]
 
 
 def _eos_token_ids(
@@ -518,6 +546,16 @@ def _create_inprocess_vllm_sampler(args, tokenizer):
         "max_lora_rank": args.lora_rank,
         "max_loras": 1,
     }
+  # Stop strings end generation at a decoded substring (e.g. "</answer>").
+  # vLLM only matches them while detokenizing, so force detokenize on; the
+  # sampler already sets include_stop_str_in_output=True so the matched stop
+  # text stays in the recorded output.
+  sampling_kwargs = {}
+  stop_sequences = _stop_sequences(args)
+  if stop_sequences:
+    sampling_kwargs["stop"] = stop_sequences
+    sampling_kwargs["detokenize"] = True
+    logging.info("Rollout stop sequences enabled: %s", stop_sequences)
   vllm_config = vllm_sampler.VllmConfig(
       server_mode=server_mode,
       mesh=rollout_mesh,
@@ -528,6 +566,7 @@ def _create_inprocess_vllm_sampler(args, tokenizer):
       mapping_config=mapping_config,
       additional_config=maxtext_additional_config,
       engine_kwargs=engine_kwargs,
+      sampling_kwargs=sampling_kwargs,
   )
   sampler_adapter = inprocess_vllm_sampler_adapter.InprocessVllmSamplerAdapter(
       server_id=args.worker_id,

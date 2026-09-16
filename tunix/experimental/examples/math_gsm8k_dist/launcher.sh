@@ -83,6 +83,9 @@ CHAT_PARSER=${CHAT_PARSER:-raw}
 # tokenizer's default EOS token, so the rollout has to stop on it. Set empty to
 # fall back to the tokenizer's EOS token.
 EOS_TOKENS=${EOS_TOKENS-'<|im_end|>'}
+# Stop string(s) ending generation at a decoded substring (e.g. '</answer>').
+# JSON list for several, or a single bare string. inprocess_vllm only.
+STOP_SEQUENCES=${STOP_SEQUENCES-}
 # Derived from MODEL_NAME (MaxText config names are lowercase) and passed to
 # both the trainer and the rollout, so the two cannot drift. A disagreement is
 # not a clean failure: Raiden pairs tensors by exact name, so a MaxText trainer
@@ -392,6 +395,7 @@ echo "  sampler:        $SAMPLER"
 echo "  weight sync:    $WEIGHT_SYNC_MODE"
 echo "  chat parser:    $CHAT_PARSER"
 echo "  eos tokens:     ${EOS_TOKENS:-<tokenizer default>}"
+echo "  stop seqs:      ${STOP_SEQUENCES:-<none>}"
 echo "  trainer backend:$TRAINER_BACKEND"
 echo "  maxtext model:  ${MAXTEXT_MODEL_NAME:-<unset>}"
 echo "  maxtext ckpt:   ${MAXTEXT_CKPT:-<unset>}"
@@ -556,6 +560,9 @@ echo "Launching rollout node with sampler=$SAMPLER on TPU chips $ROLLOUT_TPU_CHI
   fi
   if [[ -n "$EOS_TOKENS" ]]; then
     ROLLOUT_CMD+=( --eos_tokens="$EOS_TOKENS" )
+  fi
+  if [[ -n "$STOP_SEQUENCES" ]]; then
+    ROLLOUT_CMD+=( --stop_sequences="$STOP_SEQUENCES" )
   fi
   if [[ "$USE_LORA" == "1" || "$USE_LORA" == "true" || "$USE_LORA" == "True" ]]; then
     ROLLOUT_CMD+=(--use_lora)

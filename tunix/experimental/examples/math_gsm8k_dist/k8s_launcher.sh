@@ -41,6 +41,7 @@ export MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-128}
 # tokenizer's default EOS token, so the rollout has to stop on it. Set empty to
 # fall back to the tokenizer's EOS token.
 export EOS_TOKENS=${EOS_TOKENS-'<|im_end|>'}
+export STOP_SEQUENCES=${STOP_SEQUENCES-}
 export BATCH_SIZE=${BATCH_SIZE:-2}
 export NUM_GENERATIONS=${NUM_GENERATIONS:-2}
 export MAX_STEPS=${MAX_STEPS:-1}
@@ -427,6 +428,7 @@ start_rollout_instance() {
         --max_prompt_length=${MAX_PROMPT_LENGTH} \
         --max_response_length=${MAX_RESPONSE_LENGTH} \
         ${EOS_TOKENS:+--eos_tokens=\"${EOS_TOKENS}\"} \
+        ${STOP_SEQUENCES:+--stop_sequences=\"${STOP_SEQUENCES}\"} \
         --sampler=${SAMPLER} \
         --lora_rank=${LORA_RANK} \
         --lora_alpha=${LORA_ALPHA} \
