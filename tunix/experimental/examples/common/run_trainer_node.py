@@ -189,6 +189,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
   parser.add_argument(
+      "--donate_actor_params",
+      type=_str2bool,
+      default=False,
+      help=(
+          "Donate the actor's parameter buffers to the optimizer update (in-place"
+          " update; saves one parameter-tree copy of HBM)."
+      ),
+  )
+  parser.add_argument(
       "--actor_remat",
       type=_str2bool,
       default=False,
@@ -724,6 +733,7 @@ def _create_tunix_trainer_factory(args) -> tuple[Any, Mesh]:
       eval_every_n_steps=args.eval_every_n_steps,
       gradient_accumulation_steps=grad_accumulation_steps,
       grad_accumulator_dtype=jnp.dtype(args.grad_accumulator_dtype),
+      donate_model_in_update=args.donate_actor_params,
       compute_logps_chunk_size=args.compute_logps_chunk_size,
       metrics_prefix="actor",
       pbar_description="Actor Training",

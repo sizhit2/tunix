@@ -114,6 +114,7 @@ TRAINER_PARAM_DTYPE=${TRAINER_PARAM_DTYPE:-float32}
 TRAINER_GRAD_ACCUM_DTYPE=${TRAINER_GRAD_ACCUM_DTYPE:-float32}
 ADAM_MU_DTYPE=${ADAM_MU_DTYPE:-}
 TRAINER_REMAT=${TRAINER_REMAT:-false}
+TRAINER_DONATE_PARAMS=${TRAINER_DONATE_PARAMS:-false}
 COMPUTE_LOGPS_CHUNK_SIZE=${COMPUTE_LOGPS_CHUNK_SIZE:-0}
 
 # tunix runs Tunix's PeftTrainer; maxtext runs MaxText's MaxTextTrainingEngine.
@@ -489,6 +490,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --actor_param_dtype="$TRAINER_PARAM_DTYPE"
     --grad_accumulator_dtype="$TRAINER_GRAD_ACCUM_DTYPE"
     --actor_remat="$TRAINER_REMAT"
+    --donate_actor_params="$TRAINER_DONATE_PARAMS"
     --compute_logps_chunk_size="$COMPUTE_LOGPS_CHUNK_SIZE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --optimizer_b1="$ADAM_B1"

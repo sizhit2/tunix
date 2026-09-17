@@ -99,6 +99,13 @@ class TrainingConfig:
   # Dtype of the gradient accumulation buffers. float32 by default; bfloat16
   # halves that buffer (one parameter-tree copy) when HBM is tight.
   grad_accumulator_dtype: DTypeLike = jnp.float32
+  # Also donate the model's parameter buffers to the optimizer update so the
+  # new parameters are written in place. Without it the update materializes a
+  # second parameter tree next to the live one (plus the optimizer's own
+  # temporaries), which is what pushes a float32 actor off a single chip. Only
+  # safe when nothing else holds the live parameter arrays across the update
+  # (e.g. a colocated sampler); the orchestrator-driven trainer does not.
+  donate_model_in_update: bool = False
   # Sequence packing configuration.
   max_seq_token_per_tpu: int | None = None
   # Static upper bound on real segments (sequences) per packed row, used to size
@@ -833,8 +840,13 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
           fwd_bwd_step,
           donate_argnames=donate_argnames,
       )
+      update_donate_argnames = (
+          ("model", "optimizer", "grad_accumulator")
+          if self.config.donate_model_in_update
+          else ("optimizer", "grad_accumulator")
+      )
       self._jitted_update_step_fn = nnx.jit(
-          update_step, donate_argnames=("optimizer", "grad_accumulator")
+          update_step, donate_argnames=update_donate_argnames
       )
       self._jitted_eval_step_fn = nnx.jit(eval_step)
 
@@ -867,7 +879,7 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
       # nothing if the fused path is never called.
       _jitted_train_step_fn = nnx.jit(
           self.create_train_step_fn(),
-          donate_argnames=("optimizer", "grad_accumulator"),
+          donate_argnames=update_donate_argnames,
       )
       if self._is_single_microstep():
         self._jitted_train_step_fn = maybe_cache_and_partial(
