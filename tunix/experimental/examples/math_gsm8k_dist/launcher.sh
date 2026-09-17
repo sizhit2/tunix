@@ -106,6 +106,8 @@ FORCE_KILL=0
 TRAINER_TPU_CHIPS=${TRAINER_TPU_CHIPS:-0,1}
 TRAINER_FSDP=${TRAINER_FSDP:-1}
 TRAINER_TP=${TRAINER_TP:-2}
+# Actor parameter storage dtype; float32 matches examples/math_gsm8k.
+TRAINER_PARAM_DTYPE=${TRAINER_PARAM_DTYPE:-float32}
 
 # tunix runs Tunix's PeftTrainer; maxtext runs MaxText's MaxTextTrainingEngine.
 TRAINER_BACKEND=${TRAINER_BACKEND:-tunix}
@@ -477,6 +479,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --mini_batch_size="$MINI_BATCH_SIZE"
     --num_generations="$NUM_GENERATIONS"
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
+    --actor_param_dtype="$TRAINER_PARAM_DTYPE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --optimizer_b1="$ADAM_B1"
     --optimizer_b2="$ADAM_B2"

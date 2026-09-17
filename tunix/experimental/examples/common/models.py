@@ -55,13 +55,21 @@ def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
   return config
 
 
-def create_model(model_name: str, model_dir: str, mesh: Mesh):
+def create_model(
+    model_name: str,
+    model_dir: str,
+    mesh: Mesh,
+    dtype: jnp.dtype = jnp.bfloat16,
+):
   """Builds the demo model on the given mesh.
 
   Args:
     model_name: Demo model selector, e.g. "gemma-2-2b" or "Qwen3-1.7B".
     model_dir: Directory holding the safetensors shards.
     mesh: Device mesh the parameters are sharded over.
+    dtype: Storage dtype of the loaded parameters. A trainer's actor should use
+      float32: with bfloat16 storage an Adam step at lr ~1e-7 is far below the
+      weights' ULP and rounds away, so the policy never moves.
 
   Returns:
     An nnx module ready for training or serving.
@@ -73,6 +81,6 @@ def create_model(model_name: str, model_dir: str, mesh: Mesh):
     )
   if "qwen3" in normalized:
     return qwen3_params_lib.create_model_from_safe_tensors(
-        model_dir, _qwen3_config(model_name), mesh, dtype=jnp.bfloat16  # pyrefly: ignore[bad-argument-type]
+        model_dir, _qwen3_config(model_name), mesh, dtype=dtype  # pyrefly: ignore[bad-argument-type]
     )
   raise ValueError(f"Unsupported demo model_name: {model_name!r}")

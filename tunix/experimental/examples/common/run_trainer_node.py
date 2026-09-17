@@ -188,6 +188,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       help="Number of trajectories per forward/backward microbatch.",
   )
   parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
+  parser.add_argument(
+      "--actor_param_dtype",
+      choices=("float32", "bfloat16"),
+      default="float32",
+      help=(
+          "Storage dtype of the actor parameters. float32 (the single-host"
+          " demo's choice) is required for the recipe's ~1e-7 learning rates:"
+          " bfloat16 storage rounds such updates away."
+      ),
+  )
   parser.add_argument("--compute_logps_chunk_size", type=int, default=0)
   parser.add_argument("--eval_every_n_steps", type=int, default=1000000)
   parser.add_argument(
@@ -524,7 +534,12 @@ def _load_actor_model(args, mesh: Mesh, *, lora: bool):
         "--model_dir is required for JAX trainer weights. Set MODEL_DIR or pass"
         " --model_dir=/path/to/local/safetensors."
     )
-  model = models.create_model(args.model_name, args.model_dir, mesh)
+  model = models.create_model(
+      args.model_name,
+      args.model_dir,
+      mesh,
+      dtype=jnp.dtype(args.actor_param_dtype),
+  )
   if not lora:
     return model
   lora_config = {
