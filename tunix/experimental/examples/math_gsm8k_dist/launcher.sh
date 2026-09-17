@@ -70,6 +70,10 @@ SEED=${SEED:-42}
 SHUFFLE=${SHUFFLE:-true}
 BETA=${BETA:-0.04}
 EPSILON=${EPSILON:-0.2}
+# Upper clip epsilon (empty -> same as EPSILON) and KL estimator; the
+# single-host demo uses EPSILON_HIGH=EPSILON and KL_LOSS_MODE=mse_kl.
+EPSILON_HIGH=${EPSILON_HIGH:-}
+KL_LOSS_MODE=${KL_LOSS_MODE:-kl}
 FLUSH_METRICS_EVERY_N_STEPS=${FLUSH_METRICS_EVERY_N_STEPS:-1}
 WANDB_PROJECT=${WANDB_PROJECT:-trellis-gsm8k}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-}
@@ -754,6 +758,7 @@ echo "Launching CPU orchestrator..."
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
     --beta="$BETA"
     --epsilon="$EPSILON"
+    --kl_loss_mode="$KL_LOSS_MODE"
     --reward_mode="$REWARD_MODE"
     --flush_metrics_every_n_steps="$FLUSH_METRICS_EVERY_N_STEPS"
     --tfds_data_dir="$TFDS_DATA_DIR"
@@ -769,6 +774,9 @@ echo "Launching CPU orchestrator..."
   fi
   if [[ -n "$INFERENCE_ADDR" ]]; then
     ORCHESTRATOR_CMD+=(--inference_addr="$INFERENCE_ADDR")
+  fi
+  if [[ -n "$EPSILON_HIGH" ]]; then
+    ORCHESTRATOR_CMD+=(--epsilon_high="$EPSILON_HIGH")
   fi
   if [[ "$USE_ROLLOUT_LOGPS" == "false" || "$USE_ROLLOUT_LOGPS" == "False" || "$USE_ROLLOUT_LOGPS" == "0" ]]; then
     ORCHESTRATOR_CMD+=(--no-use_rollout_logps)

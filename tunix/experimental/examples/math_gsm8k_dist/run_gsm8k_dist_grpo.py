@@ -136,6 +136,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--epsilon", type=float, default=0.2)
   parser.add_argument(
+      "--epsilon_high",
+      type=float,
+      default=None,
+      help="Upper clipping epsilon; defaults to --epsilon (GRPOConfig).",
+  )
+  parser.add_argument(
+      "--kl_loss_mode",
+      type=str,
+      default="kl",
+      help="KL penalty estimator (GRPOConfig.kl_loss_mode), e.g. kl or mse_kl.",
+  )
+  parser.add_argument(
       "--offpolicy",
       "--max_staleness",
       dest="max_staleness",
@@ -244,6 +256,8 @@ def _build_algo(args: argparse.Namespace) -> algorithm_adapter.GRPOAdapter:
       beta=args.beta,
       temperature=args.temperature,
       use_rollout_logps=args.use_rollout_logps,
+      epsilon_high=args.epsilon_high,
+      kl_loss_mode=args.kl_loss_mode,
   )
   return algorithm_adapter.GRPOAdapter(
       algo_config=algo_config,

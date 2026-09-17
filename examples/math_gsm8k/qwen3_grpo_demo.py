@@ -144,6 +144,12 @@ arg_parser.add_argument("--mini_batch_size", type=int, default=2)
 arg_parser.add_argument("--train_micro_batch_size", type=int, default=1)
 arg_parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
 arg_parser.add_argument("--max_steps", type=int, default=200)
+arg_parser.add_argument(
+    "--force_on_policy_ratio",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Pin the GRPO surrogate ratio to 1 (old logps := current logps).",
+)
 arg_parser.add_argument("--max_response_length", type=int, default=1024)
 arg_parser.add_argument("--max_concurrency", type=int, default=None)
 arg_parser.add_argument("--mesh_fsdp", type=int, default=None)
@@ -578,6 +584,7 @@ def main() -> None:
       advantage_estimator="grpo",
       degenerate_group_masking=False,
       use_rollout_logps=False,
+      force_on_policy_ratio=args.force_on_policy_ratio,
       system_prompt="",
       max_response_length=MAX_RESPONSE_LENGTH,
       max_concurrency=MAX_CONCURRENCY,
