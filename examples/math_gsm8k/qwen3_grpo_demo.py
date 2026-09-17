@@ -632,7 +632,12 @@ def main() -> None:
 
   # ====== Training ======
   try:
-    grpo_trainer.train(train_dataset, eval_dataset=eval_dataset)
+    # The learner evaluates whenever train_steps % eval_every_n_steps == 0,
+    # which always fires at step 0; the only way to skip the start eval is to
+    # withhold the eval dataset.
+    grpo_trainer.train(
+        train_dataset, eval_dataset=eval_dataset if EVAL_AT_START else None
+    )
   except Exception:
     rl_engine.close()
     raise
