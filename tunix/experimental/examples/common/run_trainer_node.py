@@ -189,6 +189,24 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
   parser.add_argument(
+      "--grad_accumulator_dtype",
+      choices=("float32", "bfloat16"),
+      default="float32",
+      help=(
+          "Dtype of the gradient accumulation buffers; bfloat16 saves one"
+          " parameter-tree copy of HBM."
+      ),
+  )
+  parser.add_argument(
+      "--optimizer_mu_dtype",
+      choices=("float32", "bfloat16"),
+      default=None,
+      help=(
+          "Dtype of Adam's first-moment state (optax mu_dtype); bfloat16"
+          " halves it. Unset keeps the parameter dtype."
+      ),
+  )
+  parser.add_argument(
       "--actor_param_dtype",
       choices=("float32", "bfloat16"),
       default="float32",
@@ -698,6 +716,7 @@ def _create_tunix_trainer_factory(args) -> tuple[Any, Mesh]:
   training_config = peft_trainer_v2.TrainingConfig(
       eval_every_n_steps=args.eval_every_n_steps,
       gradient_accumulation_steps=grad_accumulation_steps,
+      grad_accumulator_dtype=jnp.dtype(args.grad_accumulator_dtype),
       metrics_prefix="actor",
       pbar_description="Actor Training",
       data_sharding_axis=("fsdp",),

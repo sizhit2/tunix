@@ -96,6 +96,9 @@ class TrainingConfig:
   # Progress bar description.
   pbar_description: str | None = "Training"
 
+  # Dtype of the gradient accumulation buffers. float32 by default; bfloat16
+  # halves that buffer (one parameter-tree copy) when HBM is tight.
+  grad_accumulator_dtype: DTypeLike = jnp.float32
   # Sequence packing configuration.
   max_seq_token_per_tpu: int | None = None
   # Static upper bound on real segments (sequences) per packed row, used to size
@@ -455,7 +458,10 @@ class PeftTrainer(abstract_trainer.AbstractTrainer):
     wrt_target = nnx.LoRAParam if self._lora_enabled else nnx.Param
     self.optimizer = nnx.Optimizer(self.model, optimizer, wrt=wrt_target)
     self.grad_accumulator = GradientAccumulator(
-        self.model, wrt_target, allocate_grads=not self._is_single_microstep()
+        self.model,
+        wrt_target,
+        allocate_grads=not self._is_single_microstep(),
+        accumulator_dtype=self.config.grad_accumulator_dtype,
     )
 
     self.loss_fn = _default_loss_fn

@@ -108,6 +108,11 @@ TRAINER_FSDP=${TRAINER_FSDP:-1}
 TRAINER_TP=${TRAINER_TP:-2}
 # Actor parameter storage dtype; float32 matches examples/math_gsm8k.
 TRAINER_PARAM_DTYPE=${TRAINER_PARAM_DTYPE:-float32}
+# HBM relief for single-chip trainers: bfloat16 gradient accumulator and
+# Adam first moment (each one parameter-tree copy). Empty ADAM_MU_DTYPE keeps
+# the optax default.
+TRAINER_GRAD_ACCUM_DTYPE=${TRAINER_GRAD_ACCUM_DTYPE:-float32}
+ADAM_MU_DTYPE=${ADAM_MU_DTYPE:-}
 
 # tunix runs Tunix's PeftTrainer; maxtext runs MaxText's MaxTextTrainingEngine.
 TRAINER_BACKEND=${TRAINER_BACKEND:-tunix}
@@ -480,6 +485,7 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
     --num_generations="$NUM_GENERATIONS"
     --train_micro_batch_size="$TRAIN_MICRO_BATCH_SIZE"
     --actor_param_dtype="$TRAINER_PARAM_DTYPE"
+    --grad_accumulator_dtype="$TRAINER_GRAD_ACCUM_DTYPE"
     --eval_every_n_steps="$EVAL_EVERY_N_STEPS"
     --optimizer_b1="$ADAM_B1"
     --optimizer_b2="$ADAM_B2"
@@ -516,6 +522,9 @@ echo "Launching trainer node on TPU chips $TRAINER_TPU_CHIPS..."
   fi
   if [[ "$USE_LORA" == "1" || "$USE_LORA" == "true" || "$USE_LORA" == "True" ]]; then
     TRAINER_CMD+=(--use_lora)
+  fi
+  if [[ -n "$ADAM_MU_DTYPE" ]]; then
+    TRAINER_CMD+=(--optimizer_mu_dtype="$ADAM_MU_DTYPE")
   fi
 
   if [[ -n "$PROFILER_STEPS" ]]; then
