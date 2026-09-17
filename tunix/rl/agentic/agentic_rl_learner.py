@@ -429,8 +429,9 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
       chat_lists: List[Dict[str, str]],
       env: Any = None,
       max_generation_steps: int | None = None,
+      mode: rl_engine_lib.Mode = rl_engine_lib.Mode.TRAIN,
   ) -> base_rollout.RolloutOutput:
-    """Calls model generation."""
+    """Calls model generation with the rollout config for `mode`."""
     if env:
       env.task["policy_version"] = self.policy_version
 
@@ -455,17 +456,27 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
     result = self.rl_engine.generate(
         prompts=prompts,  # pytype: disable=wrong-arg-types
         apply_chat_template=False if self.chat_parser else True,
-        mode=rl_engine_lib.Mode.TRAIN,
+        mode=mode,
         trace_tags=tags,
         max_generation_steps=max_generation_steps,
     )
 
     return result
 
-  def _build_orchestrator(self) -> rollout_orchestrator.RolloutOrchestrator:
-    """Builds and configures a RolloutOrchestrator for parallel rollouts."""
+  def _build_orchestrator(
+      self, mode: rl_engine_lib.Mode = rl_engine_lib.Mode.TRAIN
+  ) -> rollout_orchestrator.RolloutOrchestrator:
+    """Builds and configures a RolloutOrchestrator for parallel rollouts.
+
+    Args:
+      mode: Which rollout config (TRAIN or EVAL sampling params) the
+        orchestrator's model calls should use.
+    """
     engine_kwargs = dict(
         model_call=self._model_call,
+        # Threaded through TrajectoryCollectEngine into every _model_call so
+        # eval rollouts sample with the EVAL rollout config instead of TRAIN's.
+        model_call_kwargs={"mode": mode},
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
         timeout=self.algo_config.episode_timeout,
@@ -966,7 +977,9 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
         ):
           self._last_eval_train_step = current_train_step
           self._eval_iter_steps = 0
-          eval_orchestrator = self._build_orchestrator()
+          eval_orchestrator = self._build_orchestrator(
+              mode=rl_engine_lib.Mode.EVAL
+          )
 
           async def _eval_runner_async(current_eval_orchestrator):
             eval_examples = []
