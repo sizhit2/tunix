@@ -189,6 +189,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
   )
   parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
   parser.add_argument(
+      "--actor_remat",
+      type=_str2bool,
+      default=False,
+      help="Remat decoder layers in the actor's backward pass (saves HBM).",
+  )
+  parser.add_argument(
       "--grad_accumulator_dtype",
       choices=("float32", "bfloat16"),
       default="float32",
@@ -557,6 +563,7 @@ def _load_actor_model(args, mesh: Mesh, *, lora: bool):
       args.model_dir,
       mesh,
       dtype=jnp.dtype(args.actor_param_dtype),
+      remat=args.actor_remat,
   )
   if not lora:
     return model
@@ -717,6 +724,7 @@ def _create_tunix_trainer_factory(args) -> tuple[Any, Mesh]:
       eval_every_n_steps=args.eval_every_n_steps,
       gradient_accumulation_steps=grad_accumulation_steps,
       grad_accumulator_dtype=jnp.dtype(args.grad_accumulator_dtype),
+      compute_logps_chunk_size=args.compute_logps_chunk_size,
       metrics_prefix="actor",
       pbar_description="Actor Training",
       data_sharding_axis=("fsdp",),

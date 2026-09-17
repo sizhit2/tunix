@@ -37,7 +37,9 @@ def _gemma_config(model_name: str) -> gemma_model_lib.ModelConfig:
   raise ValueError(f"Unsupported gemma model_name: {model_name!r}")
 
 
-def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
+def _qwen3_config(
+    model_name: str, remat: bool = False
+) -> qwen3_model_lib.ModelConfig:
   normalized = model_name.lower().replace("_", "-")
   if "0.6b" in normalized or "0p6b" in normalized:
     config = qwen3_model_lib.ModelConfig.qwen3_0p6b()
@@ -52,6 +54,8 @@ def _qwen3_config(model_name: str) -> qwen3_model_lib.ModelConfig:
   config.shd_config = qwen3_model_lib.ShardingConfig.get_default_sharding()
   config.dtype = jnp.bfloat16
   config.param_dtype = jnp.float32
+  if remat:
+    config.remat_config = qwen3_model_lib.RematConfig.DECODER
   return config
 
 
@@ -60,6 +64,7 @@ def create_model(
     model_dir: str,
     mesh: Mesh,
     dtype: jnp.dtype = jnp.bfloat16,
+    remat: bool = False,
 ):
   """Builds the demo model on the given mesh.
 
@@ -70,6 +75,8 @@ def create_model(
     dtype: Storage dtype of the loaded parameters. A trainer's actor should use
       float32: with bfloat16 storage an Adam step at lr ~1e-7 is far below the
       weights' ULP and rounds away, so the policy never moves.
+    remat: Rematerialize each decoder layer in the backward pass (Qwen3 only)
+      to trade compute for activation HBM.
 
   Returns:
     An nnx module ready for training or serving.
@@ -81,6 +88,6 @@ def create_model(
     )
   if "qwen3" in normalized:
     return qwen3_params_lib.create_model_from_safe_tensors(
-        model_dir, _qwen3_config(model_name), mesh, dtype=dtype  # pyrefly: ignore[bad-argument-type]
+        model_dir, _qwen3_config(model_name, remat=remat), mesh, dtype=dtype  # pyrefly: ignore[bad-argument-type]
     )
   raise ValueError(f"Unsupported demo model_name: {model_name!r}")
