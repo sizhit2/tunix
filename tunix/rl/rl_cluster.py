@@ -145,6 +145,15 @@ class RLEngine:
     self._rl_metrics_logger = metrics_logger.MetricsLogger(
         self.cluster_config.training_config.metrics_logging_options
     )
+    # The trainers stamp their metrics with the optimizer step, which runs
+    # `full_batch / mini_batch` times faster than the RL global step used for
+    # rollout/reward metrics. Trainer updates for global step N happen before
+    # `global_steps` is incremented, so re-stamping with the current global
+    # step puts actor/critic metrics on the same x-axis as everything else.
+    for trainer_prefix in ("actor", "critic"):
+      self._rl_metrics_logger.set_step_transform(
+          trainer_prefix, lambda _step: self.global_steps
+      )
     self._buffered_train_metrics: list[MetricsBuffer] = []
     self._buffered_eval_metrics: list[MetricsBuffer] = []
     self._external_metrics_logger = None

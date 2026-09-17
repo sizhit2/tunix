@@ -72,7 +72,17 @@ class MetricLoggerTest(absltest.TestCase):
 
     for backend_mock in self.mock_backends:
       backend_mock.assert_called_once()
-      self.assertIn(backend_mock.return_value, logger._backends)
+      # The W&B backend is wrapped by StepTolerantWandbBackend; compare
+      # against the unwrapped instance.
+      self.assertIn(
+          backend_mock.return_value,
+          [
+              b._backend
+              if isinstance(b, metrics_logger.StepTolerantWandbBackend)
+              else b
+              for b in logger._backends
+          ],
+      )
 
     self.assertLen(logger._backends, len(self.mock_backends))
     self.assertEqual(mock_register.call_count, len(self.mock_backends))

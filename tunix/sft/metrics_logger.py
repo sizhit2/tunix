@@ -34,6 +34,52 @@ except ImportError:
 LoggingBackend = metrax_logging.LoggingBackend
 TensorboardBackend = metrax_logging.TensorboardBackend
 WandbBackend = metrax_logging.WandbBackend
+
+
+class StepTolerantWandbBackend:
+  """Wraps a W&B backend so metrics with different step clocks can share a run.
+
+  Tunix logs ``actor/*`` (stamped by the trainer with its optimizer step) and
+  rollout/reward/generation metrics (stamped by the RL engine with the global
+  step) through the same W&B run. W&B's global ``step=`` argument must be
+  monotonic across the whole run, so whichever family is behind is silently
+  dropped ("Tried to log to step N that is less than the current step M"),
+  and none of ``rewards/*``, ``generation/*``, ``trajectory/*`` reach the
+  dashboard.
+
+  Instead of W&B's global step, every metric is logged together with a
+  ``global_step`` field that is registered once as the x-axis for all
+  metrics via ``wandb.define_metric``. Out-of-order logging is then fine, and
+  all families share one axis (``MetricsLogger.set_step_transform`` lets the
+  RL engine express the trainer's optimizer step in global steps). Everything
+  else is delegated to the wrapped backend.
+  """
+
+  STEP_KEY = "global_step"
+
+  def __init__(self, backend: LoggingBackend):
+    self._backend = backend
+    self._defined = False
+
+  def log_scalar(self, event: str, value, **kwargs):
+    wandb = getattr(self._backend, "wandb", None)
+    if wandb is None or not wandb.run:
+      return
+    if not self._defined:
+      wandb.define_metric(self.STEP_KEY)
+      wandb.define_metric("*", step_metric=self.STEP_KEY)
+      self._defined = True
+    payload = {event.lstrip("/"): value}
+    step = kwargs.get("step")
+    if step is not None:
+      payload[self.STEP_KEY] = int(step)
+    wandb.log(payload)
+
+  def close(self):
+    return self._backend.close()
+
+  def __getattr__(self, name):
+    return getattr(self._backend, name)
 CluBackend = getattr(metrax_logging, "CluBackend", None)
 
 # User backends MUST be factories (callables) to keep Options pure and copyable.
@@ -189,10 +235,12 @@ class MetricsLoggerOptions:
       try:
         wandb_kwargs = kwargs_dict.get("wandb", {})
         active_backends.append(
-            WandbBackend(
-                project=self.project_name,
-                name=self.run_name,
-                **wandb_kwargs,  # pyrefly: ignore[bad-unpacking]
+            StepTolerantWandbBackend(
+                WandbBackend(
+                    project=self.project_name,
+                    name=self.run_name,
+                    **wandb_kwargs,  # pyrefly: ignore[bad-unpacking]
+                )
             )
         )
       except (ImportError, Exception) as e:
@@ -268,6 +316,10 @@ class MetricsLogger:
         keyword-only argument exists for tests and embedding applications.
     """
     self._metrics = {}
+    # Optional per-prefix step remapping applied before values reach the
+    # backends, e.g. to express a trainer's optimizer step in RL global steps
+    # so all metric families share one x-axis. See ``set_step_transform``.
+    self._step_transforms: dict[str, Callable[[int], int]] = {}
     self._backends = (
         metrics_logger_options.create_backends()
         if metrics_logger_options
@@ -294,6 +346,21 @@ class MetricsLogger:
           _OTEL_INSTRUMENTATION_VERSION,
       )
 
+  def set_step_transform(
+      self, metrics_prefix: str, transform: Callable[[int], int] | None
+  ) -> None:
+    """Remaps the ``step`` of every metric logged under ``metrics_prefix``.
+
+    Args:
+      metrics_prefix: Prefix whose steps are remapped (e.g. ``"actor"``).
+      transform: Called with the caller-supplied step; its return value is the
+        step passed to the backends. ``None`` removes a previous transform.
+    """
+    if transform is None:
+      self._step_transforms.pop(metrics_prefix, None)
+    else:
+      self._step_transforms[metrics_prefix] = transform
+
   def log(
       self,
       metrics_prefix: str,
@@ -303,6 +370,9 @@ class MetricsLogger:
       step: int,
   ):
     """Logs the scalar metric value to local history and via jax.monitoring."""
+    transform = self._step_transforms.get(metrics_prefix)
+    if transform is not None:
+      step = transform(step)
     prefix_metrics = self._metrics.setdefault(metrics_prefix, {})
     mode_metrics = prefix_metrics.setdefault(
         mode, collections.defaultdict(list)
