@@ -144,6 +144,20 @@ arg_parser.add_argument("--mini_batch_size", type=int, default=2)
 arg_parser.add_argument("--train_micro_batch_size", type=int, default=1)
 arg_parser.add_argument("--compute_logps_micro_batch_size", type=int, default=1)
 arg_parser.add_argument("--max_steps", type=int, default=200)
+arg_parser.add_argument("--num_generations", type=int, default=8)
+arg_parser.add_argument("--beta", type=float, default=0.04)
+arg_parser.add_argument("--eval_every_n_steps", type=int, default=50)
+arg_parser.add_argument(
+    "--eval_at_start", action=argparse.BooleanOptionalAction, default=True
+)
+arg_parser.add_argument(
+    "--eval_at_end", action=argparse.BooleanOptionalAction, default=True
+)
+arg_parser.add_argument(
+    "--model_dir",
+    default=None,
+    help="Local safetensors dir; defaults to <artifacts>/models (downloaded).",
+)
 arg_parser.add_argument(
     "--force_on_policy_ratio",
     action=argparse.BooleanOptionalAction,
@@ -170,19 +184,19 @@ MODEL_ID = f"Qwen/{MODEL_NAME}"
 SEED = 42
 
 NUM_PROMPTS_PER_STEP = args.batch_size
-NUM_GENERATIONS = 8
+NUM_GENERATIONS = args.num_generations
 MINI_BATCH_SIZE = args.mini_batch_size
 TRAIN_MICRO_BATCH_SIZE = args.train_micro_batch_size
 COMPUTE_LOGPS_MICRO_BATCH_SIZE = args.compute_logps_micro_batch_size
 
 MAX_STEPS = args.max_steps
 NUM_EPOCHS = 1000
-EVAL_EVERY_N_STEPS = 50
+EVAL_EVERY_N_STEPS = args.eval_every_n_steps
 EVAL_BATCH_SIZE = 128
-EVAL_AT_START = True
-EVAL_AT_END = True
+EVAL_AT_START = args.eval_at_start
+EVAL_AT_END = args.eval_at_end
 
-BETA = 0.04
+BETA = args.beta
 EPSILON = 0.2
 # NeMo's reference_policy_kl_type="k2" is exactly 0.5 * (logp-ref_logp)^2,
 # which matches Tunix's "mse_kl" implementation.
@@ -222,7 +236,7 @@ MODEL_DTYPE = jnp.bfloat16
 
 ARTIFACT_ROOT = os.path.join(REPO_ROOT, "artifacts", "qwen3_grpo_gsm8k_vtc")
 TFDS_DATA_DIR = os.path.join(ARTIFACT_ROOT, "data")
-MODEL_DOWNLOAD_DIR = os.path.join(ARTIFACT_ROOT, "models")
+MODEL_DOWNLOAD_DIR = args.model_dir or os.path.join(ARTIFACT_ROOT, "models")
 INTERMEDIATE_CKPT_DIR = os.path.join(ARTIFACT_ROOT, "intermediate_ckpt")
 CHECKPOINT_ROOT = os.path.join(
     ARTIFACT_ROOT, "checkpoints", str(int(time.time()))
