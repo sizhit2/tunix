@@ -221,6 +221,7 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
     )
     sft_utils.show_hbm_usage(title="AgenticRLLearner init")
 
+    self._validate_chat_parser(chat_parser)
     self.chat_parser = chat_parser
     self.tokenizer = rl_engine.tokenizer
     self.policy_version = self.rl_engine.global_steps
@@ -253,6 +254,31 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
     self._train_rewards_window: List[float] = []
     self._eval_rewards_window: List[float] = []
     self._rewards_window_lock = threading.Lock()
+
+  # Methods every chat parser must expose. `TrajectoryCollectEngine` and
+  # `agentic_utils.tokenize_and_generate_masks` call these unconditionally, so
+  # a parser missing one only fails deep inside a rollout worker thread, after
+  # the models have already been loaded. Check up front instead.
+  _REQUIRED_CHAT_PARSER_METHODS = ("parse", "update_assistant_end_tokens")
+
+  @classmethod
+  def _validate_chat_parser(cls, chat_parser: Any | None) -> None:
+    """Checks that `chat_parser` implements the parser contract."""
+    if chat_parser is None:
+      return
+    missing = [
+        name
+        for name in cls._REQUIRED_CHAT_PARSER_METHODS
+        if not callable(getattr(chat_parser, name, None))
+    ]
+    if missing:
+      raise ValueError(
+          f"chat_parser {type(chat_parser).__name__} is missing required"
+          f" method(s) {missing}. Subclass"
+          " `tunix.rl.agentic.parser.chat_template_parser.parser"
+          ".BaseChatTemplateParser` (or one of its built-in subclasses) so"
+          " the parser stays in sync with the agentic rollout contract."
+      )
 
   def _validate_rollout_config(self):
     """Validates that the rollout config is properly aligned with the algo config."""

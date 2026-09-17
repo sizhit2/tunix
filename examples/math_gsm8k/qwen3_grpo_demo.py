@@ -460,8 +460,22 @@ def vtc_metric_fn(prompts, completions, rewards, advantages, answer, **kwargs):
 
 
 # ====== Tokenizer / Model ======
-class VTCRawTextParser:
-  """Raw-text prompt parser matching NeMo's vtc_raw_text_processor style."""
+class VTCRawTextParser(chat_parser_lib.BaseChatTemplateParser):
+  """Raw-text prompt parser matching NeMo's vtc_raw_text_processor style.
+
+  Subclasses `BaseChatTemplateParser` so it inherits the full parser contract
+  the agentic rollout engine relies on (`update_assistant_end_tokens`,
+  `newline_tokens`, `tokens`, ...) instead of re-implementing a subset that
+  silently drifts when that contract grows. Only `parse` is overridden, to
+  keep the exact raw-text rendering (no role/control tokens) of the recipe.
+  """
+
+  def _init_tokens(self) -> chat_parser_lib.TokenConfig:
+    # No control tokens at all: this is a raw-text (non-chat) prompt.
+    return chat_parser_lib.TokenConfig(message_separator="\n")
+
+  def _init_generation_prompt(self) -> str:
+    return ""
 
   def parse(
       self,
@@ -480,7 +494,7 @@ class VTCRawTextParser:
         parts.append(content)
       elif role == "assistant" and content:
         parts.append(content)
-    return "\n".join(parts)
+    return self.tokens.message_separator.join(parts)
 
 
 class VTCGRPOLearner(GRPOLearner):
@@ -626,7 +640,7 @@ def main() -> None:
       token=os.getenv("HF_TOKEN"),
       trust_remote_code=True,
   )
-  chat_parser = VTCRawTextParser()
+  chat_parser = VTCRawTextParser(tokenizer)
   qwen_eos_tokens = tokenizer.encode("<|im_end|>", add_special_tokens=False)  # pyrefly: ignore[missing-attribute]
 
   reference, actor = create_reference_and_actor(shared_mesh)
