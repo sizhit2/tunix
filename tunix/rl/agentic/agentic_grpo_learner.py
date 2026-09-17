@@ -801,12 +801,23 @@ class GRPOLearner(agentic_rl_learner.AgenticRLLearner[TGrpoConfig]):
     ]
     original_inputs = rl_utils.merge_micro_batches(original_inputs_list)
 
-    prompt_token_len = len(prompt_tokens_list[0])
+    # The rollout hands back prompts already left-padded to max_prompt_length,
+    # so len() is always the padded size; count real tokens via the mask.
+    prompt_token_lens = np.asarray(prompt_mask.sum(axis=-1))
     self.rl_engine.buffer_metrics_async(
         {
-            "generation/prompts/mean_length": (prompt_token_len, np.mean),
-            "generation/prompts/max_length": (prompt_token_len, np.max),
-            "generation/prompts/min_length": (prompt_token_len, np.min),
+            "generation/prompts/mean_length": (
+                np.mean(prompt_token_lens),
+                np.mean,
+            ),
+            "generation/prompts/max_length": (
+                np.max(prompt_token_lens),
+                np.max,
+            ),
+            "generation/prompts/min_length": (
+                np.min(prompt_token_lens),
+                np.min,
+            ),
         },
         mode=mode,
         step=expected_step,  # pyrefly: ignore[bad-argument-type]
@@ -911,11 +922,11 @@ class GRPOLearner(agentic_rl_learner.AgenticRLLearner[TGrpoConfig]):
             f"{prefix}/{sub_key}/max": (np.max(flat_vals), np.max),
             f"{prefix}/{sub_key}/min": (np.min(flat_vals), np.min),
         })
-      self.rl_engine.buffer_metrics_async(
-          metrics_to_log,  # pyrefly: ignore[bad-argument-type]
-          mode=mode,
-          step=expected_step,  # pyrefly: ignore[bad-argument-type]
-      )
+    self.rl_engine.buffer_metrics_async(
+        metrics_to_log,  # pyrefly: ignore[bad-argument-type]
+        mode=mode,
+        step=expected_step,  # pyrefly: ignore[bad-argument-type]
+    )
 
     for metric_fn in self.metric_fns:
       user_defined_metric = metric_fn(
