@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import copy
 import dataclasses
+import functools
 import itertools
 import queue
 import threading
@@ -458,8 +459,15 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
       max_generation_steps: int | None = None,
       *,
       prompt_token_ids: np.ndarray | None = None,
+      mode: rl_engine_lib.Mode = rl_engine_lib.Mode.TRAIN,
   ) -> base_rollout.RolloutOutput:
-    """Calls model generation from chat messages or from recorded token ids."""
+    """Calls model generation from chat messages or from recorded token ids.
+
+    `mode` selects the per-mode rollout config in rl_engine.generate
+    (ClusterConfig.rollout_config may be a {Mode: RolloutConfig} dict), so
+    evaluation rollouts sample with the EVAL config (e.g. greedy) instead of
+    the TRAIN exploration settings.
+    """
     if env:
       env.task["policy_version"] = self.policy_version
 
@@ -484,7 +492,7 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
       return self.rl_engine.generate(
           prompts=[chat_lists],  # pytype: disable=wrong-arg-types
           apply_chat_template=not self.chat_parser,
-          mode=rl_engine_lib.Mode.TRAIN,
+          mode=mode,
           trace_tags=tags,
           max_generation_steps=max_generation_steps,
       )
@@ -492,16 +500,22 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
     return self.rl_engine.generate(
         prompts=None,
         apply_chat_template=False,
-        mode=rl_engine_lib.Mode.TRAIN,
+        mode=mode,
         trace_tags=tags,
         max_generation_steps=max_generation_steps,
         prompt_token_ids=[generate_utils.as_token_ids(prompt_token_ids)],
     )
 
-  def _build_orchestrator(self) -> rollout_orchestrator.RolloutOrchestrator:
-    """Builds and configures a RolloutOrchestrator for parallel rollouts."""
+  def _build_orchestrator(
+      self, mode: rl_engine_lib.Mode = rl_engine_lib.Mode.TRAIN
+  ) -> rollout_orchestrator.RolloutOrchestrator:
+    """Builds and configures a RolloutOrchestrator for parallel rollouts.
+
+    Binding the mode per orchestrator (rather than mutating learner state)
+    keeps a concurrent train producer and an eval orchestrator race-free.
+    """
     engine_kwargs = dict(
-        model_call=self._model_call,
+        model_call=functools.partial(self._model_call, mode=mode),
         tokenizer=self.tokenizer,
         chat_parser=self.chat_parser,
         timeout=self.algo_config.episode_timeout,
@@ -1003,7 +1017,9 @@ class AgenticRLLearner(abc.ABC, Generic[TConfig]):
         ):
           self._last_eval_train_step = current_train_step
           self._eval_iter_steps = 0
-          eval_orchestrator = self._build_orchestrator()
+          eval_orchestrator = self._build_orchestrator(
+              mode=rl_engine_lib.Mode.EVAL
+          )
 
           async def _eval_runner_async(current_eval_orchestrator):
             eval_examples = []

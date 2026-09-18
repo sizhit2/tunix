@@ -336,6 +336,71 @@ class ExactTokenContinuityConfigTest(absltest.TestCase):
     self.assertFalse(sent["apply_chat_template"])
     np.testing.assert_array_equal(sent["prompt_token_ids"], [[0, 3]])
 
+  def test_model_call_mode_reaches_generate(self):
+    import types  # pylint: disable=g-import-not-at-top
+    import numpy as np  # pylint: disable=g-import-not-at-top
+    from tunix.rl import rl_cluster as rl_engine_lib  # pylint: disable=g-import-not-at-top
+
+    obj = types.SimpleNamespace(
+        algo_config=agentic_rl_learner.AgenticRLConfig(),
+        chat_parser=None,
+        rl_engine=types.SimpleNamespace(generate=mock.Mock()),
+        policy_version=1,
+        _full_batch_size=0,
+    )
+    # Default stays TRAIN.
+    agentic_rl_learner.AgenticRLLearner._model_call(
+        obj, None, prompt_token_ids=np.array([0, 3])
+    )
+    self.assertEqual(
+        obj.rl_engine.generate.call_args.kwargs["mode"],
+        rl_engine_lib.Mode.TRAIN,
+    )
+    # Explicit EVAL is forwarded, selecting the EVAL rollout config in
+    # rl_engine.generate (rollout_config may be a {Mode: config} dict).
+    agentic_rl_learner.AgenticRLLearner._model_call(
+        obj, None, prompt_token_ids=np.array([0, 3]),
+        mode=rl_engine_lib.Mode.EVAL,
+    )
+    self.assertEqual(
+        obj.rl_engine.generate.call_args.kwargs["mode"],
+        rl_engine_lib.Mode.EVAL,
+    )
+
+  def test_build_orchestrator_binds_eval_mode_to_model_call(self):
+    import types  # pylint: disable=g-import-not-at-top
+    import numpy as np  # pylint: disable=g-import-not-at-top
+    from tunix.rl import rl_cluster as rl_engine_lib  # pylint: disable=g-import-not-at-top
+
+    obj = types.SimpleNamespace(
+        algo_config=agentic_rl_learner.AgenticRLConfig(),
+        chat_parser=None,
+        rl_engine=types.SimpleNamespace(generate=mock.Mock(), perf_v2=None),
+        tokenizer=object(),
+        policy_version=1,
+        _full_batch_size=0,
+        _rollout_sync_lock=object(),
+        _model_call=None,
+    )
+    obj._model_call = (
+        lambda *a, **k: agentic_rl_learner.AgenticRLLearner._model_call(
+            obj, *a, **k
+        )
+    )
+    with mock.patch.object(
+        agentic_rl_learner.rollout_orchestrator, "RolloutOrchestrator"
+    ) as orch_cls:
+      agentic_rl_learner.AgenticRLLearner._build_orchestrator(
+          obj, mode=rl_engine_lib.Mode.EVAL
+      )
+      bound_call = orch_cls.call_args.kwargs["engine_kwargs"]["model_call"]
+    # The eval orchestrator's bound model_call must generate in EVAL mode.
+    bound_call(None, prompt_token_ids=np.array([1]))
+    self.assertEqual(
+        obj.rl_engine.generate.call_args.kwargs["mode"],
+        rl_engine_lib.Mode.EVAL,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
